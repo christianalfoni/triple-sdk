@@ -1,0 +1,11 @@
+name = "rdf-cells"
+main = "src/do/worker.ts"
+compatibility_date = "2026-08-01"
+
+[[durable_objects.bindings]]
+name = "CELL"
+class_name = "WorkspaceCell"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WorkspaceCell"]
