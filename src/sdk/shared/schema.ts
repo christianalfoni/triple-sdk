@@ -29,17 +29,32 @@
  * lazily, with interface annotations breaking the TYPE cycle (§4.4).
  */
 
-import type { Id } from "./types.ts";
+import type { Id, Value } from "./types.ts";
 
-export type FieldType = "string" | "number" | "boolean" | "ref";
+export type FieldType = "string" | "number" | "boolean" | "ref" | "object";
+
+/**
+ * §4.7 — the runtime shape of an object field's members, carried on the Field so
+ * writes validate against it and the SCHEMA HASH sees it (a shape change is a
+ * generation change — the migration machinery must notice). No `multiple`, no
+ * refs: an object value has no identity and no triple cardinality inside.
+ */
+export type ObjectMemberField = {
+  type: Exclude<FieldType, "ref"> | readonly Exclude<FieldType, "ref">[];
+  optional: boolean;
+  shape?: Record<string, ObjectMemberField>;
+};
 
 /**
  * What the triple layer sees for one predicate: just enough to decide replace vs
  * append (§4.1). The entity structure above it is a schema-level veneer.
  */
 export type Field = {
-  /** A single type, or the members of a `Schema.union`. Type-level only at runtime. */
+  /** A single type, or the members of a `Schema.union`. */
   type: FieldType | readonly FieldType[];
+
+  /** §4.7 — present exactly when `type` is "object": the members' shape. */
+  shape?: Record<string, ObjectMemberField>;
 
   /**
    * Can this (subject, predicate) pair hold more than one value?
@@ -93,7 +108,13 @@ export class FieldBuilder<
   declare readonly valueKind?: T;
 
   constructor(
-    readonly field: { type: FieldType | readonly FieldType[]; multiple: M; optional: O },
+    readonly field: {
+      type: FieldType | readonly FieldType[];
+      multiple: M;
+      optional: O;
+      /** §4.7 — object fields carry their members' shape. */
+      shape?: Record<string, ObjectMemberField>;
+    },
     /** The ref's target — possibly a THUNK for mutual references (§4.4). Read
      * through `refTarget`, never directly. */
     readonly target?: R | (() => R),
@@ -121,6 +142,12 @@ type UnionOf<Members extends readonly AnyFieldBuilder[]> =
   Members[number] extends FieldBuilder<infer T, boolean, boolean, unknown>
     ? T
     : never;
+
+/** What may live INSIDE a `Schema.object`: single-valued non-ref builders. */
+export type ObjectShape = Record<
+  string,
+  FieldBuilder<Exclude<FieldType, "ref">, false, boolean, unknown>
+>;
 
 /** One entity: just its fields. The NAME is the key in `Schema.build` (§4.6). */
 export type EntityDef = Record<string, AnyFieldBuilder>;
@@ -235,6 +262,41 @@ export const Schema = {
     }),
 
   /**
+   * §4.7 — a structured value WITHOUT identity: stored as ONE triple, replaced
+   * whole on every change (which is exactly right when members change together —
+   * `{ x, y }` can never tear under per-field merge). Members use the same
+   * builders as fields — scalars, unions, `.optional()`, nested `Schema.object`
+   * — but never refs (an object value cannot be pointed at, so it does not get
+   * to point) and never `.multiple()` (no triples inside a value). The shape is
+   * runtime data: writes validate against it, and it feeds the schema hash, so
+   * reshaping an object is a schema generation change (§7.3).
+   */
+  object<const S extends ObjectShape>(shape: S): FieldBuilder<"object", false, false, S> {
+    const members: Record<string, ObjectMemberField> = {};
+    for (const [name, builder] of Object.entries(shape)) {
+      if (!(builder instanceof FieldBuilder)) {
+        throw new Error(`Object member "${name}" is not a field builder.`);
+      }
+      const type = builder.field.type;
+      if (type === "ref" || (Array.isArray(type) && type.includes("ref"))) {
+        throw new Error(`Object member "${name}" is a ref — object values have no identity (§4.7).`);
+      }
+      if (builder.field.multiple) {
+        throw new Error(`Object member "${name}" is .multiple() — there are no triples inside a value (§4.7).`);
+      }
+      members[name] = {
+        type: type as ObjectMemberField["type"],
+        optional: builder.field.optional,
+        ...(builder.field.shape !== undefined ? { shape: builder.field.shape } : {}),
+      };
+    }
+    return new FieldBuilder(
+      { type: "object", multiple: false, optional: false, shape: members },
+      shape as never,
+    );
+  },
+
+  /**
    * A pointer to another entity. For MUTUAL references, pass a thunk —
    * `Schema.ref(() => B)` — resolved lazily at first use (which is always after
    * both consts exist). The one cost of a cycle: TypeScript cannot INFER
@@ -293,6 +355,64 @@ export function subjectEntityName(subject: Id): string {
   return i === -1 ? subject : subject.slice(0, i);
 }
 
+/**
+ * §4.2 (now enforced) — validate ONE value against a field's declared type, on
+ * every write path: the client's draft (early error) and the server's compile
+ * (authoritative). Object values check recursively against the shape: required
+ * members present, no unknown members, each member typed.
+ */
+export function validateValue(
+  field: { type: FieldType | readonly FieldType[]; shape?: Record<string, ObjectMemberField> },
+  value: Value,
+  where: string,
+): void {
+  const types = Array.isArray(field.type) ? field.type : [field.type];
+  for (const type of types) {
+    if (matchesType(type as FieldType, value, field.shape)) return;
+  }
+  throw new Error(
+    `${where}: ${JSON.stringify(value)} is not a ${types.join(" | ")}.`,
+  );
+}
+
+function matchesType(
+  type: FieldType,
+  value: Value,
+  shape: Record<string, ObjectMemberField> | undefined,
+): boolean {
+  switch (type) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "ref":
+      return (
+        typeof value === "object" && value !== null &&
+        typeof (value as { id?: unknown }).id === "string" &&
+        Object.keys(value).length === 1
+      );
+    case "object": {
+      if (typeof value !== "object" || value === null || shape === undefined) return false;
+      const record = value as Record<string, Value>;
+      for (const key of Object.keys(record)) {
+        if (shape[key] === undefined) return false; // unknown member
+      }
+      for (const [member, memberField] of Object.entries(shape)) {
+        const held = record[member];
+        if (held === undefined) {
+          if (!memberField.optional) return false; // missing required member
+          continue;
+        }
+        const memberTypes = Array.isArray(memberField.type) ? memberField.type : [memberField.type];
+        if (!memberTypes.some((t) => matchesType(t as FieldType, held, memberField.shape))) return false;
+      }
+      return true;
+    }
+  }
+}
+
 /** Look a field up by predicate, or throw. An unknown predicate is a bug. */
 export function fieldOf(schema: Schema, predicate: Id): Field {
   const field = schema[predicate];
@@ -320,6 +440,7 @@ export function schemaHash(entities: Entities): string {
           type: builder.field.type,
           multiple: builder.field.multiple,
           optional: builder.field.optional,
+          shape: builder.field.shape ?? null,
           // Ref targets are named too — stamped by the AppSchema constructor
           // before this runs. An unregistered target throws a naming error here,
           // which is the eager failure we want.

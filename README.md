@@ -217,7 +217,7 @@ Three commitments, each carried end to end through the flows above:
 
 |                           |                                                                    |                                                              |
 | ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Schema & entities**     | typed shape, shared by both sides; required by default             | `Schema.from` → `Schema.build`, `.optional()`, `.multiple()` |
+| **Schema & entities**     | typed shape, shared by both sides; required by default             | `Schema.from` → `Schema.build`, `.optional()`, `.multiple()`, `Schema.object()` |
 | **Typed queries**         | find + shape in one, result types computed                         | `.where()` (values or sets), `.whereNot/Absent/Greater/Lesser/Between`, `.whereEither()`, `.whereId()`, subqueries |
 | **Ordered windows**       | pagination over a set: explicit order, keyset cursors, live refill | `.orderBy().limit().after()`                                 |
 | **Live queries**          | the only read: data, status, per-query reactivity                  | `client.watch()`, `useQuery()`                               |

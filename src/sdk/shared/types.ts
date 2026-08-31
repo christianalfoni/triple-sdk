@@ -8,11 +8,20 @@
 /** An entity id. Globally meaningful, minted by whoever creates the entity (§0.4, §8.4). */
 export type Id = string;
 
-/** A pointer from one subject to another. The only structured value we allow. */
+/** A pointer from one subject to another. */
 export type Ref = { id: Id };
 
-/** The object position of a triple: a literal scalar, or a pointer. */
-export type Value = string | number | boolean | Ref;
+/**
+ * §4.7 — a structured value WITHOUT identity: replaced whole, never addressed,
+ * pointed at, or partially protected. Members are scalars or nested objects —
+ * never refs (that is the identity rule) and never arrays (that is `.multiple()`).
+ */
+export type ObjectValue = { [member: string]: string | number | boolean | ObjectValue };
+
+/** The object position of a triple: a scalar, a pointer, or an object value.
+ * NOTE: ref-ness is decided by the SCHEMA (the field's declared type), never by
+ * a value's shape — an object value may legitimately contain an `id` member. */
+export type Value = string | number | boolean | Ref | ObjectValue;
 
 /**
  * The atom of the system.

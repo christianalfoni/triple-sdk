@@ -33,7 +33,7 @@ import {
   type FieldType,
   type Schema,
 } from "./schema.ts";
-import type { Id, Readable, Ref, Triple, Value } from "./types.ts";
+import type { Id, ObjectValue, Readable, Ref, Triple, Value } from "./types.ts";
 import { encodeValue, isRef, tripleKey } from "./value.ts";
 
 // -----------------------------------------------------------------------------
@@ -49,11 +49,28 @@ export type ValueOfType<T extends FieldType> = T extends "string"
       ? boolean
       : T extends "ref"
         ? Ref
-        : never;
+        : T extends "object"
+          ? ObjectValue // untyped fallback; ValueOfField derives the real shape
+          : never;
+
+/** §4.7 — the TS type an object field's declared shape produces. */
+export type ObjectValueOf<S> = {
+  [K in keyof S as S[K] extends FieldBuilder<FieldType, false, false, unknown>
+    ? K
+    : never]: ValueOfField<S[K]>;
+} & {
+  [K in keyof S as S[K] extends FieldBuilder<FieldType, false, true, unknown>
+    ? K
+    : never]?: ValueOfField<S[K]>;
+};
 
 /** The value type a field builder accepts and yields. */
 export type ValueOfField<B> =
-  B extends FieldBuilder<infer T, boolean, boolean, unknown> ? ValueOfType<T> : never;
+  B extends FieldBuilder<infer T, boolean, boolean, infer R>
+    ? T extends "object"
+      ? ObjectValueOf<R>
+      : ValueOfType<T>
+    : never;
 
 /** Fields a window may order by: single-valued scalars (refs and lists cannot rank). */
 type OrderableKeys<F> = {

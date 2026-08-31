@@ -10,9 +10,19 @@
 
 import type { Ref, Triple, Value } from "./types.ts";
 
-/** Narrow a Value to a Ref. */
+/**
+ * Narrow a Value to the Ref SHAPE. Shape only: with object values in the model
+ * (§4.7), true ref-ness comes from the schema — callers on ref-typed predicates
+ * may use this safely; generic callers must consult the field's declared type.
+ */
 export function isRef(value: Value): value is Ref {
-  return typeof value === "object" && value !== null && "id" in value;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof (value as Ref).id === "string" &&
+    Object.keys(value).length === 1
+  );
 }
 
 /**
@@ -27,7 +37,12 @@ export function isRef(value: Value): value is Ref {
  * matters because they are genuinely different triples.
  */
 export function encodeValue(value: Value): string {
-  if (isRef(value)) return `r:${value.id}`;
+  if (typeof value === "object") {
+    if (isRef(value)) return `r:${value.id}`;
+    // §4.7 — CANONICAL: keys sorted recursively, so two spellings of the same
+    // object are the same value (set identity, POS bucket, wire dedupe).
+    return `o:${canonicalJson(value)}`;
+  }
   switch (typeof value) {
     case "string":
       return `s:${value}`;
@@ -36,6 +51,16 @@ export function encodeValue(value: Value): string {
     case "boolean":
       return `b:${value}`;
   }
+}
+
+function canonicalJson(value: unknown): string {
+  if (typeof value !== "object" || value === null) return JSON.stringify(value);
+  const record = value as Record<string, unknown>;
+  const body = Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",");
+  return `{${body}}`;
 }
 
 const NUMBER_BITS = new DataView(new ArrayBuffer(8));
@@ -75,6 +100,8 @@ export function decodeValue(encoded: string): Value {
       return body === "true";
     case "r":
       return { id: body };
+    case "o":
+      return JSON.parse(body) as Value;
     default:
       throw new Error(`Cannot decode value: ${encoded}`);
   }

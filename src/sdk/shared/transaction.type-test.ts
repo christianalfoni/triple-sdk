@@ -15,6 +15,7 @@ const Todo = Schema.from({
   owner: Schema.ref(User),
   team: Schema.ref(User).optional(),
   tags: Schema.string().multiple(),
+  position: Schema.object({ x: Schema.number(), y: Schema.number(), z: Schema.number().optional() }).optional(),
 });
 export const schema = Schema.build({ user: User, todo: Todo });
 
@@ -51,3 +52,26 @@ draft.completed = "yes";
 
 export type _anchor = FieldBuilder<"string", false, false>;
 export const _store = Store;
+
+// -----------------------------------------------------------------------------
+// §4.7 — object values: typed whole, replaced whole
+// -----------------------------------------------------------------------------
+
+draft.position = { x: 1, y: 2 };
+draft.position = { x: 1, y: 2, z: 3 }; // optional member may appear
+draft.position = undefined; // the FIELD is optional → clearing compiles
+
+// @ts-expect-error — `y` is a required member of the shape
+draft.position = { x: 1 };
+
+// @ts-expect-error — members are typed
+draft.position = { x: 1, y: "two" };
+
+// @ts-expect-error — unknown members do not compile
+draft.position = { x: 1, y: 2, w: 9 };
+
+// @ts-expect-error — refs cannot live inside an object value (§4.7: no identity)
+Schema.object({ owner: Schema.ref(User) });
+
+// @ts-expect-error — no .multiple() inside a value: there are no triples in there
+Schema.object({ tags: Schema.string().multiple() });

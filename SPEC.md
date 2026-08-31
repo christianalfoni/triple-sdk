@@ -200,6 +200,36 @@ from/build pairing the policy side uses (§10.1).
 (§6.5) and policy contexts (§10.2) nest with bare keys — nesting into `team` knows it
 lands on Team.
 
+### 4.7 Object values — structure without identity
+
+```ts
+position: Schema.object({ x: Schema.number(), y: Schema.number() }).optional()
+```
+
+A structured value stored as ONE triple and replaced WHOLE on every change.
+That wholeness is the point, not a limitation: when members only ever change
+together, per-field LWW can TEAR them — client A sets `x`, client B sets `y`,
+and the merged position is a corner neither meant. An object value makes the
+struct the atom, so concurrent writes race as a unit.
+
+The identity rule decides when to use one: **an object value has no identity —
+nothing can point at it, query into it, window by it, or protect part of it.
+The moment you want any of those four, it is an entity.** The type system
+enforces the consequences: members are declared with the SAME builders as
+fields (scalars, unions, `.optional()`, nested objects) but never refs and
+never `.multiple()`.
+
+Why builders rather than a bare TS generic: the shape must be RUNTIME data —
+it feeds the schema hash (reshaping an object is a generation change, §7.3, or
+migration would be blind exactly where structured data lives) and it validates
+every write, on both paths: the draft throws early, the server rejects
+authoritatively (this also ended §4.2's "types are advisory": every written
+value is now checked against its declared type). Encoding is canonical —
+member order never creates a second identity — and ref-ness is decided by the
+SCHEMA, never by a value's shape, which also let `delete`'s inbound-ref sweep
+become schema-driven: one POS lookup per ref predicate instead of the old
+full-store walk.
+
 ### 4.4 Mutual references — the thunk form
 
 An entity must exist before it is referenced — unless the reference is a THUNK,
@@ -332,7 +362,9 @@ semantics well-defined per subject.
 ### 4.4 What the schema deliberately does not do
 
 No `subClassOf`, no `domain`/`range`, no entailment, no required fields, no validation.
-Types are advisory — used by the entity API to decode values, not enforced on write.
+Types are ENFORCED on write (since §4.7): every value — scalar, union member, or
+object shape, recursively — is validated against its declared type on both
+paths: the client's draft throws early, the server rejects authoritatively.
 
 ---
 
@@ -1299,7 +1331,7 @@ Additive later, deliberately absent now:
 | `xsd:` datatypes | `typeof` is enough until we serialize to standard RDF |
 | N-Quads / Turtle / JSON-LD | JSON over the wire; codecs are pure functions, bolt on anytime |
 | RDFS entailment | No `subClassOf` in the demo domain |
-| SHACL validation | Types are advisory in v1 (§4.2) |
+| ~~SHACL validation~~ | Superseded in spirit: every write is validated against the declared type — scalars, unions, and object shapes recursively (§4.7). What remains un-built is cross-field constraint LOGIC, which is what policies' write rules are for |
 | SPARQL | Typed pattern arrays instead (§6) |
 | Query planning / constraint reordering | Actor controls order and that is a stated decision (§6.2). A planner needs cardinality estimates, and would silently undo a deliberate ordering |
 | ~~Reverse traversal~~ | **Built** (§6.8) as correlated subqueries: `.select((team) => ({ todos: Query.from(Todo).where("team", team)… }))` — explicit correlation, per-parent filters/windows, live |

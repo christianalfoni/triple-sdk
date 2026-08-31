@@ -37,6 +37,7 @@ import {
   fieldOf,
   predicateOf,
   subjectEntityName,
+  validateValue,
   type EntityDef,
   type FieldBuilder,
   type FieldType,
@@ -196,6 +197,7 @@ export class Transaction {
   /** REPLACE intent: the §0.2 remove-half comes from the local view; the server
    * re-derives it authoritatively (§9.1). */
   #recordSet(subject: Id, predicate: string, value: Value): void {
+    validateValue(fieldOf(this.schema, predicate), value, predicate);
     this.#operations.push({ op: "set", subject, predicate, value });
     for (const [key, triple] of this.#added) {
       if (triple[0] === subject && triple[1] === predicate) this.#added.delete(key);
@@ -207,6 +209,7 @@ export class Transaction {
   }
 
   #recordAdd(subject: Id, predicate: string, value: Value): void {
+    validateValue(fieldOf(this.schema, predicate), value, predicate);
     this.#operations.push({ op: "add", subject, predicate, value });
     this.#pushAdd([subject, predicate, value]);
   }
@@ -257,16 +260,22 @@ export class Transaction {
    * Remove an entity entirely: every triple where it is the subject, and every
    * triple where something points AT it (or we'd leave dangling refs).
    *
-   * The second scan has no index to use (SPEC §2) and walks the whole store. Fine at
-   * demo scale; it is the one place an OPS index would earn its keep.
+   * The inbound sweep is SCHEMA-DRIVEN (§4.7): only ref-typed predicates can
+   * point here, each answered by one POS lookup — the old full-store walk (and
+   * the OPS-index wish that came with it) is gone.
    */
   delete(subject: Id): this {
     this.#operations.push({ op: "delete", subject });
     for (const triple of this.reader.match([subject, undefined, undefined])) {
       this.#pushRemove(triple);
     }
-    for (const triple of this.reader.match([undefined, undefined, { id: subject }])) {
-      this.#pushRemove(triple);
+    // Inbound refs, SCHEMA-DRIVEN (§4.7): only ref-typed predicates can point
+    // here, and each is one POS lookup — the old full-store walk is gone, and an
+    // object VALUE that merely contains an id can never be swept as a ref.
+    for (const predicate of refPredicates(this.schema)) {
+      for (const triple of this.reader.match([undefined, predicate, { id: subject }])) {
+        this.#pushRemove(triple);
+      }
     }
     return this;
   }
@@ -303,6 +312,14 @@ export class Transaction {
  * Generated locally so an optimistic create needs no server round trip, and no id
  * reconciliation afterwards: the id the client chose IS the id the server stores.
  */
+/** The predicates that can hold refs — the only ones a delete must sweep. */
+function refPredicates(schema: Schema): string[] {
+  return Object.keys(schema).filter((predicate) => {
+    const type = schema[predicate]!.type;
+    return type === "ref" || (Array.isArray(type) && type.includes("ref"));
+  });
+}
+
 export function newId(prefix: string): Id {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 }
@@ -368,8 +385,11 @@ export function compileOperations(
       for (const triple of current.match([operation.subject, undefined, undefined])) {
         pushRemove(triple);
       }
-      for (const triple of current.match([undefined, undefined, { id: operation.subject }])) {
-        pushRemove(triple);
+      // Schema-driven inbound-ref sweep (§4.7): one POS lookup per ref predicate.
+      for (const predicate of refPredicates(schema)) {
+        for (const triple of current.match([undefined, predicate, { id: operation.subject }])) {
+          pushRemove(triple);
+        }
       }
       deleted.add(operation.subject);
       continue;
@@ -377,6 +397,7 @@ export function compileOperations(
 
     const { subject, predicate, value } = operation;
     const field = fieldOf(schema, predicate);
+    validateValue(field, value, predicate);
     const entityName = predicate.slice(0, predicate.indexOf("/"));
     if (subjectEntityName(subject) !== entityName) {
       throw new Error(

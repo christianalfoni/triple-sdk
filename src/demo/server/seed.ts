@@ -23,6 +23,7 @@ export function seed(server: TripleServer): void {
     completed: false,
     owner: { id: DEMO_USER },
     tags: ["sdk"],
+    position: { x: 120, y: 80 },
   });
 
   tx.create(Todo, {

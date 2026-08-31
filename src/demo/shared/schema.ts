@@ -26,6 +26,9 @@ export const Todo = Schema.from({
   owner: Schema.ref(User),
   team: Schema.ref(Team).optional(), // private todos have no team → `Ref | undefined`
   tags: Schema.string().multiple(), // → `string[]`, [] when absent
+  // §4.7 — a structured value WITHOUT identity: one triple, replaced whole, so
+  // x and y can never tear under concurrent edits. Members can never be refs.
+  position: Schema.object({ x: Schema.number(), y: Schema.number() }).optional(),
 });
 
 // an entity is just its fields — the KEY here is its name (and its id prefix)

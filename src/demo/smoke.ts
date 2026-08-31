@@ -292,6 +292,32 @@ await either.ready;
 log("whereEither", `${either.data.length} todos across two owner branches (OR)`);
 either.close();
 
+// §4.7 — object values: one triple, replaced whole, validated against the shape
+// on BOTH write paths (draft: early throw; server: authoritative reject).
+const positioned = client.watch(
+  Query.from(Todo).whereId(todos.data[0]!.id).select({ position: true }),
+);
+await positioned.ready;
+await client.transact((tx) => {
+  tx.edit(Todo, todos.data[0]!.id).position = { x: 10, y: 20 };
+});
+await client.transact((tx) => {
+  tx.edit(Todo, todos.data[0]!.id).position = { x: 11, y: 21 }; // replaced WHOLE
+});
+let shapeError = "";
+try {
+  await client.transact((tx) => {
+    tx.edit(Todo, todos.data[0]!.id).position = { x: 1 } as never; // y missing
+  });
+} catch (error) {
+  shapeError = (error as Error).message;
+}
+log(
+  "object value",
+  `position ${JSON.stringify(positioned.data[0]?.position)} · bad shape throws: ${shapeError !== ""}`,
+);
+positioned.close();
+
 // §7.6 — closing a query EVICTS what no survivor needs: the cache is bounded by
 // what is watched, not by session length. Ada's name is needed by THIS query only.
 const peek = client.watch(Query.from(User).whereId(OTHER_USER).select({ name: true }));
