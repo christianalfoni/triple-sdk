@@ -122,9 +122,15 @@ await client.transact((tx) => tx.set(Todo, "todo_3", "completed", true));
 1. **`Transaction`** — record-phrased intent. It reads the LOCAL view (cache +
    pending) to build two artifacts:
    ```json
-   operations: [{ "op": "set", "subject": "todo_3", "predicate": "todo/completed", "value": true }]
-   delta:      { "removed": [["todo_3","todo/completed",false]],
-                 "added":   [["todo_3","todo/completed",true]] }
+   {
+     "operations": [
+       { "op": "set", "subject": "todo_3", "predicate": "todo/completed", "value": true }
+     ],
+     "delta": {
+       "removed": [["todo_3", "todo/completed", false]],
+       "added":   [["todo_3", "todo/completed", true]]
+     }
+   }
    ```
    The `operations` are what TRAVELS; the `delta` is only this client's preview.
    > ✓ intent survives being days old — the server re-derives against truth · ✗ the vocabulary is four verbs (set/add/remove/delete): no server-computed increments, so counters are last-write-wins
