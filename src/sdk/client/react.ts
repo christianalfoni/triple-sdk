@@ -31,11 +31,19 @@
  * cache — a hydrated client paints data before (or without) the network.
  */
 
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { EntityResult, QueryBuilder } from "../shared/query.ts";
 import type { EntityDef } from "../shared/schema.ts";
 import type { Id } from "../shared/types.ts";
 import type { LiveQuery, QueryStatus, TripleClient } from "./client.ts";
+import type { Transaction } from "../shared/transaction.ts";
+
+export type TransactionState =
+  | { status: "idle" }
+  | { status: "pending" }
+  | { status: "committed" }
+  | { status: "queued" }
+  | { status: "rejected"; error: Error };
 
 export type UseQueryResult<
   E extends EntityDef,
@@ -85,6 +93,39 @@ export function createHooks(client: TripleClient) {
     return cell.read();
   }
 
+  /**
+   * The write-side hook: `[run, state]`, mirroring React's useActionState. The
+   * callback takes the draft-writing tx plus YOUR call-time arguments; `state`
+   * follows the §8.2 outcomes — "committed" (acked) or "queued" (durable in the
+   * offline outbox), with "rejected" carrying the server's reason.
+   *
+   *   const [toggle, toggling] = useTransaction((tx, todo: MyTodo) => {
+   *     tx.edit(Todo, todo.id).completed = !todo.completed;
+   *   });
+   *   …
+   *   <input type="checkbox" onChange={() => void toggle(todo)} />
+   */
+  function useTransaction<Args extends unknown[]>(
+    build: (tx: Transaction, ...args: Args) => void,
+  ): [(...args: Args) => Promise<"committed" | "queued">, TransactionState] {
+    const [state, setState] = useState<TransactionState>({ status: "idle" });
+    const latest = useRef(build);
+    latest.current = build;
+    const run = useCallback(async (...args: Args): Promise<"committed" | "queued"> => {
+      setState({ status: "pending" });
+      try {
+        const outcome = await client.transact((tx) => latest.current(tx, ...args));
+        setState({ status: outcome });
+        return outcome;
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        setState({ status: "rejected", error });
+        throw error;
+      }
+    }, []);
+    return [run, state];
+  }
+
   /** The live roster (§13): re-renders on join/leave diffs. */
   function usePresence(): readonly Id[] {
     return useSyncExternalStore(
@@ -94,7 +135,7 @@ export function createHooks(client: TripleClient) {
     );
   }
 
-  return { useQuery, usePresence };
+  return { useQuery, useTransaction, usePresence };
 }
 
 /**

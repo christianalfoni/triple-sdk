@@ -27,13 +27,13 @@ type Transport = import("../sdk/client/transport.ts").Transport;
 
 const server = new TripleServer({ schema, policy, storage: new MemoryStorage() });
 const seed = new Transaction(server.schema, server.storage);
-seed.set(User, DEMO_USER, "name", "Christian");
-seed.set(Todo, "todo_h1", "text", "hook it up");
-seed.set(Todo, "todo_h1", "completed", false);
-seed.set(Todo, "todo_h1", "owner", { id: DEMO_USER });
-seed.set(Todo, "todo_h2", "text", "already done");
-seed.set(Todo, "todo_h2", "completed", true);
-seed.set(Todo, "todo_h2", "owner", { id: DEMO_USER });
+seed.edit(User, DEMO_USER).name = "Christian";
+seed.edit(Todo, "todo_h1").text = "hook it up";
+seed.edit(Todo, "todo_h1").completed = false;
+seed.edit(Todo, "todo_h1").owner = { id: DEMO_USER };
+seed.edit(Todo, "todo_h2").text = "already done";
+seed.edit(Todo, "todo_h2").completed = true;
+seed.edit(Todo, "todo_h2").owner = { id: DEMO_USER };
 server.commit(seed);
 
 const transport: Transport = {
@@ -87,7 +87,7 @@ if (!container.textContent?.includes("hook it up")) fail("first paint missed cac
 keeper.close(); // the hook's own watch holds the cache from here
 
 // 2 — a write re-renders through the hook
-await act(async () => { await client.transact((tx) => tx.set(Todo, "todo_h1", "text", "hooked!")); });
+await act(async () => { await client.transact((tx) => (tx.edit(Todo, "todo_h1").text = "hooked!")); });
 await settle();
 if (!container.textContent?.includes("hooked!")) fail("update did not re-render");
 

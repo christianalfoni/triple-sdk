@@ -173,7 +173,7 @@ The unit of declaration is the **entity**: a plain object of fields. Its NAME is
 the key it is registered under in `Schema.build` — stated once, nowhere else — and
 the wire predicates (`todo/text`) are generated from it. `Schema.build` stamps each
 entity with its key (a hidden symbol), which is how standalone call sites
-(`Query.from(Todo)`, `tx.set(Todo, …)`) resolve predicates without being handed
+(`Query.from(Todo)`, `tx.edit(Todo, …)`) resolve predicates without being handed
 the registry. The triple layer (§1–§3) never sees an entity — `flattenEntities`
 collapses the definitions into the flat `predicate → { type, multiple }` map it
 consumes.
@@ -909,27 +909,47 @@ and no id reconciliation, because the id the client chose is the id the server s
 
 ---
 
-## 9. Entity API
+## 9. The write API — drafts
 
-Ergonomics layer. Solves §0.2 — turning an assignment into a remove + add pair.
+One way to write: inside `transact`, address a record and mutate a DRAFT of it
+(the Immer idiom — mutate a scoped draft, changes are extracted as intent).
 
 ```ts
-tx.set(Todo, todoId, "text", "buy oat milk")
-// single   → reads current value, emits remove(old) + add(new)
+await client.transact((tx) => {
+  tx.edit(Todo, todoId).text = "buy oat milk"
+  // single → `set` intent; the remove-half of §0.2 is derived (locally for the
+  // preview, authoritatively by the server, §9.1)
 
-tx.add(Todo, todoId, "tags", "urgent")
-// multiple → emits add only
+  const fresh = tx.create(Todo, {        // mints the id (§8.4); REQUIRED fields
+    text: "ship it",                     // are REQUIRED — forgetting one is a
+    completed: false,                    // compile error, not a §4.5 rejection
+    owner: { id: me },
+  })
+  fresh.tags.push("urgent")              // multiple → `add` intent
+  fresh.tags.remove("q3")                // multiple → `remove` intent
+  fresh.team = undefined                 // optional → clears (remove intents)
 
-tx.remove(Todo, todoId, "tags", "urgent")
-tx.delete(todoId)   // every triple of the subject, plus inbound refs
+  tx.delete(oldId)                       // every triple, plus inbound refs
+})
 ```
 
-Writes are entity-aware and typed: `field` must belong to the entity, `.set()` accepts
-only its single-valued fields and `.add()` only its multiple ones — so using the wrong
-verb is a compile error before it is a runtime one — and the value must match the
-field's declared type.
+The rules that keep drafts honest:
 
-A transaction accumulates a `Delta` and is sent as one `transact` message.
+- Draft typing mirrors query results (§4.5): required singles are `T` —
+  assigning `undefined` does not compile; optional singles clear with it.
+- Lists are MUTATED (`push`/`remove`), never reassigned — reassignment cannot
+  map to add/remove intent honestly, so it is a compile error.
+- Draft READS return the current local value (storage plus this transaction's
+  own edits), so `if (todo.completed) …` works mid-transaction.
+- `edit` addresses any KNOWN id — existing, or fixed-id creation (the verb is
+  derived from existence, §10.4); `create` mints.
+- Underneath, nothing changed: property writes record the same `set`/`add`/
+  `remove`/`delete` intent ops in write order; the wire and the server are
+  untouched. React consumption is `useTransaction`: `[run, state]`, with state
+  following the §8.2 outcomes.
+
+A transaction accumulates the ops plus an optimistic `Delta` preview and is sent
+as one `transact` message.
 
 ---
 

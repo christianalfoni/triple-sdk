@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { HttpTransport, TripleClient } from "../../sdk/client/index.ts";
 import { createHooks } from "../../sdk/client/react.ts";
 import { Query, type ResultOf } from "../../sdk/shared/query.ts";
-import { newId } from "../../sdk/shared/transaction.ts";
 import { isRef } from "../../sdk/shared/value.ts";
 import type { Triple } from "../../sdk/shared/types.ts";
 import { DEMO_TEAM, DEMO_USER, schema, Todo } from "../shared/schema.ts";
@@ -27,7 +26,7 @@ client.connect(); // SSE push + reconnect + epoch/schema handshakes, one stream
 // ONE binding, next to the client: queries stay the chaining API; `useQuery`
 // owns consumption — watch on mount, re-render on change, close on unmount
 // (which also lets the cache evict what nothing watches, §7.6).
-const { useQuery, usePresence } = createHooks(client);
+const { useQuery, useTransaction, usePresence } = createHooks(client);
 
 // -----------------------------------------------------------------------------
 // Queries — built once at module level; identity is the payload, so building
@@ -52,26 +51,12 @@ const teamTodos = Query.from(Todo)
 type MyTodo = ResultOf<typeof myTodos>;
 
 // -----------------------------------------------------------------------------
-// Mutations — writes carry INTENT (set/add/remove/delete), not deltas: the
-// server compiles them against the truth, which is what makes a days-old
-// offline queue correct on arrival. Optimistic: visible before the network is
-// touched; resolves "committed" | "queued" (queued = durable in the outbox).
+// Mutations — DRAFTS inside transact (§9): property writes record INTENT
+// (set/add/remove/delete on the wire, never deltas), the server compiles it
+// against the truth, and the optimistic preview is visible before the network
+// is touched. `useTransaction` is the React consumption: [run, state], where
+// state resolves "committed" | "queued" (queued = durable in the outbox).
 // -----------------------------------------------------------------------------
-
-async function addTodo(text: string): Promise<void> {
-  const id = newId("todo");
-  await client.transact((tx) => {
-    tx.set(Todo, id, "text", text);
-    tx.set(Todo, id, "completed", false);
-    tx.set(Todo, id, "owner", { id: DEMO_USER });
-  });
-}
-
-const toggleTodo = (todo: MyTodo) =>
-  client.transact((tx) => tx.set(Todo, todo.id, "completed", !todo.completed));
-const deleteTodo = (todo: MyTodo) => client.transact((tx) => tx.delete(todo.id));
-const addTag = (todo: MyTodo, tag: string) =>
-  client.transact((tx) => tx.add(Todo, todo.id, "tags", tag));
 
 // -----------------------------------------------------------------------------
 // Components — no subscribe/close anywhere: useQuery is the whole lifecycle.
@@ -79,6 +64,13 @@ const addTag = (todo: MyTodo, tag: string) =>
 
 function MyTodos() {
   const todos = useQuery(myTodos);
+  const [toggleTodo] = useTransaction((tx, todo: MyTodo) => {
+    tx.edit(Todo, todo.id).completed = !todo.completed;
+  });
+  const [deleteTodo] = useTransaction((tx, todo: MyTodo) => tx.delete(todo.id));
+  const [addTag] = useTransaction((tx, todo: MyTodo, tag: string) => {
+    tx.edit(Todo, todo.id).tags.push(tag);
+  });
   const name = todos.data[0]?.owner.name;
   return (
     <>
@@ -116,6 +108,11 @@ function MyTodos() {
 }
 
 function NewTodoForm() {
+  // `create` mints the id and REQUIRES the required fields — forget `completed`
+  // and this does not compile (§4.5, moved to the compiler).
+  const [addTodo, adding] = useTransaction((tx, text: string) => {
+    tx.create(Todo, { text, completed: false, owner: { id: DEMO_USER } });
+  });
   return (
     <form
       onSubmit={(event) => {
@@ -128,7 +125,7 @@ function NewTodoForm() {
       }}
     >
       <input name="text" placeholder="What needs doing?" autoComplete="off" />
-      <button type="submit">Add</button>
+      <button type="submit" disabled={adding.status === "pending"}>Add</button>
     </form>
   );
 }

@@ -32,9 +32,9 @@ log("watch", `${todos.data.length} todos, ${client.size} triples cached`);
 // create — optimistic: visible synchronously, before the server answers
 const id = newId("todo");
 const creating = client.transact((tx) => {
-  tx.set(Todo, id, "text", "written by the client sdk");
-  tx.set(Todo, id, "completed", false);
-  tx.set(Todo, id, "owner", { id: DEMO_USER });
+  tx.edit(Todo, id).text = "written by the client sdk";
+  tx.edit(Todo, id).completed = false;
+  tx.edit(Todo, id).owner = { id: DEMO_USER };
 });
 log(
   "optimistic",
@@ -49,22 +49,22 @@ log(
 const row = () => todos.data.find((todo) => todo.id === id);
 
 // single-valued → set replaces
-await client.transact((tx) => tx.set(Todo, id, "text", "renamed once"));
-await client.transact((tx) => tx.set(Todo, id, "text", "renamed twice"));
+await client.transact((tx) => (tx.edit(Todo, id).text = "renamed once"));
+await client.transact((tx) => (tx.edit(Todo, id).text = "renamed twice"));
 log("set x2", `text ${JSON.stringify(row()?.text)}, ${textTriples()} triple in the store`);
 
 await client.transact((tx) => {
-  tx.set(Todo, id, "text", "intermediate");
-  tx.set(Todo, id, "text", "final");
+  tx.edit(Todo, id).text = "intermediate";
+  tx.edit(Todo, id).text = "final";
 });
 log("set x2 in 1 tx", `text ${JSON.stringify(row()?.text)}, ${textTriples()} triple`);
 
 // multiple → add appends
 await client.transact((tx) => {
-  tx.add(Todo, id, "tags", "a");
-  tx.add(Todo, id, "tags", "b");
+  tx.edit(Todo, id).tags.push("a");
+  tx.edit(Todo, id).tags.push("b");
 });
-await client.transact((tx) => tx.add(Todo, id, "tags", "c"));
+await client.transact((tx) => tx.edit(Todo, id).tags.push("c"));
 log("add x3", JSON.stringify(row()?.tags));
 
 // the store is a set — re-adding is a no-op. The cursor is stream-owned (§7.3),
@@ -72,13 +72,13 @@ log("add x3", JSON.stringify(row()?.tags));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 await settle();
 const before = client.version;
-await client.transact((tx) => tx.add(Todo, id, "tags", "c"));
+await client.transact((tx) => tx.edit(Todo, id).tags.push("c"));
 await settle();
 log("re-add 'c'", `version ${before} → ${client.version} (no version burned)`);
 
 // an unrelated predicate must not wake the query
 const quiet = notifications;
-await client.transact((tx) => tx.set(User, DEMO_USER, "name", "Christian"));
+await client.transact((tx) => (tx.edit(User, DEMO_USER).name = "Christian"));
 log("unrelated write", `notifications ${quiet} → ${notifications} (user/name is not in this query)`);
 
 // delete removes the subject and inbound refs
@@ -90,8 +90,8 @@ log("delete", `${todos.data.length} todos, row gone: ${row() === undefined}`);
 const partial = await client
   .transact((tx) => {
     const nid = newId("todo");
-    tx.set(Todo, nid, "text", "half a todo");
-    tx.set(Todo, nid, "owner", { id: DEMO_USER });
+    tx.edit(Todo, nid).text = "half a todo";
+    tx.edit(Todo, nid).owner = { id: DEMO_USER };
   })
   .then(() => "ALLOWED")
   .catch((error: Error) => error.message);
@@ -106,7 +106,7 @@ log(
 );
 
 const refused = await client
-  .transact((tx) => tx.set(Todo, "todo_not_mine", "text", "hacked"))
+  .transact((tx) => (tx.edit(Todo, "todo_not_mine").text = "hacked"))
   .then(() => "ALLOWED")
   .catch((error: Error) => error.message);
 log("write to Ada's", refused);
@@ -123,7 +123,7 @@ log("team traversal", `${teamTodos.data.length} team todo visible, owned by ${sh
 
 const teamText = () => teamTodos.data.find((t) => t.id === shared!.id)?.text;
 const editing = client
-  .transact((tx) => tx.set(Todo, shared!.id, "text", "hijacked"))
+  .transact((tx) => (tx.edit(Todo, shared!.id).text = "hijacked"))
   .then(() => "ALLOWED")
   .catch((error: Error) => error.message);
 log("optimistic edit", `text is ${JSON.stringify(teamText())} while pending`);
@@ -134,7 +134,7 @@ log("reject revert", `text is back to ${JSON.stringify(teamText())}`);
 // §4.6: a subject's id prefix declares its entity — wrong pairings never leave
 // the client
 const wrongEntity = await client
-  .transact((tx) => tx.set(Todo, DEMO_TEAM, "text", "confused"))
+  .transact((tx) => (tx.edit(Todo, DEMO_TEAM).text = "confused"))
   .then(() => "ALLOWED")
   .catch((error: Error) => error.message);
 log("wrong entity", wrongEntity);
@@ -149,17 +149,17 @@ log("ref integrity", refInt);
 
 // §11.4: rows keep object identity across re-runs when unchanged
 const [rowA, rowB] = [todos.data[0]!, todos.data[1]!];
-await client.transact((tx) => tx.set(Todo, rowB.id, "completed", !rowB.completed));
+await client.transact((tx) => (tx.edit(Todo, rowB.id).completed = !rowB.completed));
 const rowA2 = todos.data.find((t) => t.id === rowA.id);
 log("row identity", `untouched row kept identity: ${rowA2 === rowA}`);
 
 // §10.6: leaving the team is a permission change — and it arrives as a delta.
 // The synthesized removes clean everything membership granted out of the cache.
-await client.transact((tx) => tx.remove(Team, DEMO_TEAM, "member", { id: DEMO_USER }));
+await client.transact((tx) => tx.edit(Team, DEMO_TEAM).member.remove({ id: DEMO_USER }));
 log("leave team", `${teamTodos.data.length} team todos left — revocation reached the cache live`);
 
 const rejoin = await client
-  .transact((tx) => tx.add(Team, DEMO_TEAM, "member", { id: DEMO_USER }))
+  .transact((tx) => tx.edit(Team, DEMO_TEAM).member.push({ id: DEMO_USER }))
   .then(() => "ALLOWED")
   .catch((error: Error) => error.message);
 log("rejoin", `${rejoin} — you cannot grant yourself back in`);
@@ -178,9 +178,9 @@ offEphemeral();
 // §13: transact reports its outcome
 const outcome = await client.transact((tx) => {
   const oid = newId("todo");
-  tx.set(Todo, oid, "text", "outcome check");
-  tx.set(Todo, oid, "completed", false);
-  tx.set(Todo, oid, "owner", { id: DEMO_USER });
+  tx.edit(Todo, oid).text = "outcome check";
+  tx.edit(Todo, oid).completed = false;
+  tx.edit(Todo, oid).owner = { id: DEMO_USER };
 });
 log("outcome", `online write → "${outcome}"`);
 
@@ -192,9 +192,9 @@ await win.ready;
 log("window", `${win.data.length} rows, first: ${JSON.stringify(win.data[0]?.text)}`);
 await client.transact((tx) => {
   const aid = newId("todo");
-  tx.set(Todo, aid, "text", "AAA sorts first");
-  tx.set(Todo, aid, "completed", false);
-  tx.set(Todo, aid, "owner", { id: DEMO_USER });
+  tx.edit(Todo, aid).text = "AAA sorts first";
+  tx.edit(Todo, aid).completed = false;
+  tx.edit(Todo, aid).owner = { id: DEMO_USER };
 });
 await settle();
 log("window shift", `first is now: ${JSON.stringify(win.data[0]?.text)}`);
@@ -316,9 +316,9 @@ log(
 const liveId = newId("todo");
 const started = performance.now();
 await client.transact((tx) => {
-  tx.set(Todo, liveId, "text", "pushed live");
-  tx.set(Todo, liveId, "completed", false);
-  tx.set(Todo, liveId, "owner", { id: DEMO_USER });
+  tx.edit(Todo, liveId).text = "pushed live";
+  tx.edit(Todo, liveId).completed = false;
+  tx.edit(Todo, liveId).owner = { id: DEMO_USER };
 });
 await until(() => otherTodos.data.some((todo) => todo.id === liveId));
 log(

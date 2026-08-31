@@ -36,7 +36,7 @@ function run(label: string, storage: StorageAdapter, retainLog?: number): void {
   });
   const actor = "user_inv";
   const boot = new Transaction(server.schema, server.storage);
-  boot.set(User, actor, "name", "Invariant");
+  boot.edit(User, actor).name = "Invariant";
   server.commit(boot);
 
   const alive: string[] = [];
@@ -48,19 +48,19 @@ function run(label: string, storage: StorageAdapter, retainLog?: number): void {
     const roll = rnd();
     if (roll < 0.3 || alive.length === 0) {
       const id = `todo_inv${created++}`;
-      tx.set(Todo, id, "text", `t${i}`);
-      tx.set(Todo, id, "completed", false);
-      tx.set(Todo, id, "owner", { id: actor });
+      tx.edit(Todo, id).text = `t${i}`;
+      tx.edit(Todo, id).completed = false;
+      tx.edit(Todo, id).owner = { id: actor };
       alive.push(id);
     } else if (roll < 0.55) {
-      tx.set(Todo, pick(alive), "text", `renamed ${i}`);
+      tx.edit(Todo, pick(alive)).text = `renamed ${i}`;
     } else if (roll < 0.7) {
-      tx.set(Todo, pick(alive), "completed", rnd() > 0.5);
+      tx.edit(Todo, pick(alive)).completed = rnd() > 0.5;
     } else if (roll < 0.85) {
-      tx.add(Todo, pick(alive), "tags", `tag${Math.floor(rnd() * 5)}`);
+      tx.edit(Todo, pick(alive)).tags.push(`tag${Math.floor(rnd() * 5)}`);
     } else if (roll < 0.93) {
       const id = pick(alive);
-      tx.remove(Todo, id, "tags", `tag${Math.floor(rnd() * 5)}`);
+      tx.edit(Todo, id).tags.remove(`tag${Math.floor(rnd() * 5)}`);
     } else {
       const id = pick(alive);
       tx.delete(id);
@@ -149,10 +149,10 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
   const cyclic = Schema.build({ person: Person, dog: Dog });
   const server = new TripleServer({ schema: cyclic });
   const tx = new Transaction(server.schema, server.storage);
-  tx.set(Person, "person_ada", "name", "Ada");
-  tx.set(Dog, "dog_rex", "called", "Rex");
-  tx.set(Dog, "dog_rex", "human", { id: "person_ada" });
-  tx.set(Person, "person_ada", "dog", { id: "dog_rex" });
+  tx.edit(Person, "person_ada").name = "Ada";
+  tx.edit(Dog, "dog_rex").called = "Rex";
+  tx.edit(Dog, "dog_rex").human = { id: "person_ada" };
+  tx.edit(Person, "person_ada").dog = { id: "dog_rex" };
   server.commit(tx);
   const [row] = runQuery(
     server.storage,
@@ -173,15 +173,15 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
 {
   const server = new TripleServer({ schema: appSchema, policy, storage: new MemoryStorage() });
   const seedTx = new Transaction(server.schema, server.storage);
-  seedTx.set(User, "user_owner", "name", "Owner");
-  seedTx.set(User, "user_mate", "name", "Mate");
-  seedTx.set(Team, "team_t", "name", "T");
-  seedTx.add(Team, "team_t", "member", { id: "user_owner" });
-  seedTx.add(Team, "team_t", "member", { id: "user_mate" });
-  seedTx.set(Todo, "todo_shared", "text", "shared work");
-  seedTx.set(Todo, "todo_shared", "completed", false);
-  seedTx.set(Todo, "todo_shared", "owner", { id: "user_owner" });
-  seedTx.set(Todo, "todo_shared", "team", { id: "team_t" });
+  seedTx.edit(User, "user_owner").name = "Owner";
+  seedTx.edit(User, "user_mate").name = "Mate";
+  seedTx.edit(Team, "team_t").name = "T";
+  seedTx.edit(Team, "team_t").member.push({ id: "user_owner" });
+  seedTx.edit(Team, "team_t").member.push({ id: "user_mate" });
+  seedTx.edit(Todo, "todo_shared").text = "shared work";
+  seedTx.edit(Todo, "todo_shared").completed = false;
+  seedTx.edit(Todo, "todo_shared").owner = { id: "user_owner" };
+  seedTx.edit(Todo, "todo_shared").team = { id: "team_t" };
   server.commit(seedTx);
 
   const asMate = (mutationId: string, build: (tx: Transaction) => void) => {
@@ -192,8 +192,8 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
       "user_mate",
     );
   };
-  const toggle = asMate("ov1", (tx) => tx.set(Todo, "todo_shared", "completed", true));
-  const rename = asMate("ov2", (tx) => tx.set(Todo, "todo_shared", "text", "hijacked"));
+  const toggle = asMate("ov1", (tx) => (tx.edit(Todo, "todo_shared").completed = true));
+  const rename = asMate("ov2", (tx) => (tx.edit(Todo, "todo_shared").text = "hijacked"));
   if (toggle.kind !== "ack" || rename.kind !== "reject") {
     console.error(`  overrides: toggle=${toggle.kind} (want ack) · rename=${rename.kind} (want reject)`);
     process.exit(1);
@@ -206,15 +206,15 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
 await (async () => {
   const server = new TripleServer({ schema: appSchema, policy, storage: new MemoryStorage() });
   const seedTx = new Transaction(server.schema, server.storage);
-  seedTx.set(User, "user_owner2", "name", "Owner");
-  seedTx.set(User, "user_mate2", "name", "Mate");
-  seedTx.set(Team, "team_r", "name", "R");
-  seedTx.add(Team, "team_r", "member", { id: "user_owner2" });
-  seedTx.add(Team, "team_r", "member", { id: "user_mate2" });
-  seedTx.set(Todo, "todo_secret", "text", "the roadmap");
-  seedTx.set(Todo, "todo_secret", "completed", false);
-  seedTx.set(Todo, "todo_secret", "owner", { id: "user_owner2" });
-  seedTx.set(Todo, "todo_secret", "team", { id: "team_r" });
+  seedTx.edit(User, "user_owner2").name = "Owner";
+  seedTx.edit(User, "user_mate2").name = "Mate";
+  seedTx.edit(Team, "team_r").name = "R";
+  seedTx.edit(Team, "team_r").member.push({ id: "user_owner2" });
+  seedTx.edit(Team, "team_r").member.push({ id: "user_mate2" });
+  seedTx.edit(Todo, "todo_secret").text = "the roadmap";
+  seedTx.edit(Todo, "todo_secret").completed = false;
+  seedTx.edit(Todo, "todo_secret").owner = { id: "user_owner2" };
+  seedTx.edit(Todo, "todo_secret").team = { id: "team_r" };
   server.commit(seedTx);
 
   const inProcess = (actor: string): Transport => ({
@@ -238,7 +238,7 @@ await (async () => {
 
   mate.disconnect(); // offline…
   const revoke = new Transaction(server.schema, server.storage);
-  revoke.remove(Team, "team_r", "member", { id: "user_mate2" });
+  revoke.edit(Team, "team_r").member.remove({ id: "user_mate2" });
   server.commit(revoke, "user_owner2");
   mate.connect(); // …and back, with a cursor from before the revocation
 

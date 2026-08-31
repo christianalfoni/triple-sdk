@@ -98,10 +98,12 @@ function UserTodos({ userId }: { userId: string }) {
 }
 
 await client.transact((tx) => {
-  const id = newId("todo"); // ids minted on the client
-  tx.set(Todo, id, "text", "ship it"); // visible BEFORE the network is touched
-  tx.set(Todo, id, "completed", false);
-  tx.set(Todo, id, "owner", { id: me });
+  tx.create(Todo, {                       // id minted on the client (§8.4);
+    text: "ship it",                      // visible BEFORE the network is touched
+    completed: false,                     // required fields REQUIRED — forget one
+    owner: { id: me },                    // and it does not compile
+  });
+  tx.edit(Todo, otherId).completed = true; // property write → set intent
 });
 ```
 
@@ -120,7 +122,9 @@ Mistakes are compile errors, pinned in the two `*.type-test.ts` files:
 ```ts
 Query.from(Todo).where("nope", 1); // unknown field
 Query.from(Todo).where("completed", "yes"); // boolean, not string
-tx.add(Todo, id, "text", "x"); // .add() is for .multiple() fields
+tx.create(Todo, { text: "x", owner: { id: me } }); // `completed` missing — required
+tx.edit(Todo, id).text = undefined; // required fields cannot be cleared
+tx.edit(Todo, id).tags = ["a"]; // lists are mutated (push/remove), never reassigned
 Policy.build(schema, { user: userPolicy, team: teamPolicy });
 // ^ Property 'todo' is missing — every entity's policy is a required key.
 Policy.from(Todo, {

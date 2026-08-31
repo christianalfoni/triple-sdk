@@ -54,9 +54,9 @@ function bench(label: string, storage: StorageAdapter) {
   let n = 0;
   const write = time(() => {
     const tx = new Transaction(server.schema, server.storage);
-    tx.set(Todo, `todo_w${label}${n}`, "text", "x");
-    tx.set(Todo, `todo_w${label}${n}`, "completed", false);
-    tx.set(Todo, `todo_w${label}${n++}`, "owner", { id: "user_1" });
+    tx.edit(Todo, `todo_w${label}${n}`).text = "x";
+    tx.edit(Todo, `todo_w${label}${n}`).completed = false;
+    tx.edit(Todo, `todo_w${label}${n++}`).owner = { id: "user_1" };
     server.transact({ kind: "transact", schema: server.schemaHash, mutationId: "m", operations: tx.build().operations }, "user_1");
   }, 50);
 
@@ -100,19 +100,19 @@ for (let i = 0; i < SUBSCRIBERS; i++) stops.push(memory.subscribe(`u${i % USERS}
 let n = 0;
 const fanout = time(() => {
   const tx = new Transaction(memory.schema, memory.storage);
-  tx.set(Todo, `todo_f${n}`, "text", "x");
-  tx.set(Todo, `todo_f${n}`, "completed", false);
-  tx.set(Todo, `todo_f${n++}`, "owner", { id: "user_1" });
+  tx.edit(Todo, `todo_f${n}`).text = "x";
+  tx.edit(Todo, `todo_f${n}`).completed = false;
+  tx.edit(Todo, `todo_f${n++}`).owner = { id: "user_1" };
   memory.transact({ kind: "transact", schema: memory.schemaHash, mutationId: "m", operations: tx.build().operations }, "user_1");
 }, 10);
 row("write pushed to all subscribers", `${fanout.toFixed(1)}ms`);
 
 const revoke = time(() => {
   const leave = new Transaction(memory.schema, memory.storage);
-  leave.remove(Team, "team_big", "member", { id: "user_9" });
+  leave.edit(Team, "team_big").member.remove({ id: "user_9" });
   memory.transact({ kind: "transact", schema: memory.schemaHash, mutationId: "r", operations: leave.build().operations }, "user_9");
   const rejoin = new Transaction(memory.schema, memory.storage);
-  rejoin.add(Team, "team_big", "member", { id: "user_9" });
+  rejoin.edit(Team, "team_big").member.push({ id: "user_9" });
   memory.commit(rejoin);
 }, 1) / 2;
 row(`revocation: ${TEAM_TODOS}-todo team, per event`, `${revoke.toFixed(0)}ms (was 2552ms — shared+memoized fan-out)`);
@@ -130,10 +130,10 @@ const live = client.watch(Query.from(Todo).where("owner", { id: "user_3" }).sele
 await live.ready;
 const rerun = time(() => {
   const tx = new Transaction(memory.schema, memory.storage);
-  tx.set(Todo, "todo_3", "completed", true);
+  tx.edit(Todo, "todo_3").completed = true;
   memory.commit(tx);
   const undo = new Transaction(memory.schema, memory.storage);
-  undo.set(Todo, "todo_3", "completed", false);
+  undo.edit(Todo, "todo_3").completed = false;
   memory.commit(undo);
 }, 10) / 2;
 console.log("\nclient");

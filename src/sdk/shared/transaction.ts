@@ -1,14 +1,35 @@
 /**
- * SPEC §9 — Entity API.
+ * SPEC §9 — the write API: DRAFTS.
  *
- * This exists to solve SPEC §0.2: there is no "update" in a triple store, only add
- * and remove. Changing a value means emitting BOTH halves:
+ * One way to write: inside `transact`, address a record and mutate a draft of it.
+ * Property writes become intent operations (the Immer idiom — mutate a scoped
+ * draft, changes are extracted); nothing else changes underneath: ops travel,
+ * the server compiles them against truth, the optimistic delta previews locally.
+ *
+ *   await client.transact((tx) => {
+ *     tx.edit(Todo, todoId).completed = true;    // set intent
+ *     const fresh = tx.create(Todo, {            // typed: required fields REQUIRED
+ *       text: "ship it", completed: false, owner: { id: me },
+ *     });
+ *     fresh.tags.push("urgent");                 // add intent
+ *     fresh.tags.remove("q3");                   // remove intent
+ *     tx.delete(oldId);
+ *   });
+ *
+ * `edit` addresses a KNOWN id (existing, or fixed-id creation — the server
+ * derives the verb from existence, §10.4); `create` mints a fresh id and takes
+ * one typed object whose REQUIRED fields the compiler enforces — a §4.5
+ * rejection moved to a compile error. Arrays are mutated (`push`/`remove`),
+ * never reassigned: reassignment cannot map to add/remove intent honestly.
+ *
+ * Underneath sits SPEC §0.2: there is no "update" in a triple store, only
+ * remove+add. Changing a value means emitting BOTH halves:
  *
  *   - ("user_1", "user/name", "Bob")
  *   + ("user_1", "user/name", "Christian")
  *
- * ...which means a write has to read the current value first. That is exactly what a
- * Transaction does, and why it needs a reader.
+ * ...which is why a write has to read the current value first, and why a
+ * Transaction takes a reader.
  */
 
 import {
@@ -27,10 +48,12 @@ import { withDelta } from "./store.ts";
 import type { Delta, Id, Readable, Triple, Value } from "./types.ts";
 import { tripleKey } from "./value.ts";
 
-type SingleFieldKeys<F> = {
-  [K in keyof F]: F[K] extends FieldBuilder<FieldType, false, boolean, unknown>
-    ? K
-    : never;
+type RequiredSingleKeys<F> = {
+  [K in keyof F]: F[K] extends FieldBuilder<FieldType, false, false, unknown> ? K : never;
+}[keyof F];
+
+type OptionalSingleKeys<F> = {
+  [K in keyof F]: F[K] extends FieldBuilder<FieldType, false, true, unknown> ? K : never;
 }[keyof F];
 
 type MultiFieldKeys<F> = {
@@ -38,6 +61,38 @@ type MultiFieldKeys<F> = {
     ? K
     : never;
 }[keyof F];
+
+/**
+ * A writable record view. Typing mirrors query results (§4.5: types never lie):
+ * required singles are `T` (assigning undefined is a compile error), optional
+ * singles are `T | undefined` (assigning undefined CLEARS the field), multiples
+ * are lists you mutate — `push`/`remove` — never reassign.
+ */
+export type Draft<E extends EntityDef> = { readonly id: Id } & {
+  [K in RequiredSingleKeys<E>]: ValueOfField<E[K]>;
+} & {
+  [K in OptionalSingleKeys<E>]: ValueOfField<E[K]> | undefined;
+} & {
+  readonly [K in MultiFieldKeys<E>]: DraftList<ValueOfField<E[K]>>;
+};
+
+/** A multi-valued field on a draft: read like an array, change by intent. */
+export type DraftList<T> = ReadonlyArray<T> & {
+  push(...values: T[]): void;
+  remove(value: T): void;
+};
+
+/**
+ * What `create` takes: one typed object. Required single fields are REQUIRED —
+ * forgetting one is a compile error, not a §4.5 server rejection.
+ */
+export type CreateValues<E extends EntityDef> = {
+  [K in RequiredSingleKeys<E>]: ValueOfField<E[K]>;
+} & {
+  [K in OptionalSingleKeys<E>]?: ValueOfField<E[K]>;
+} & {
+  [K in MultiFieldKeys<E>]?: readonly ValueOfField<E[K]>[];
+};
 
 export class Transaction {
   // Keyed by tripleKey so the same triple can't be added or removed twice.
@@ -53,73 +108,149 @@ export class Transaction {
   ) {}
 
   /**
-   * Write a single-valued field. REPLACES: removes whatever is there now.
-   *
-   * Entity-aware and typed: `field` must be one of the entity's `multiple: false`
-   * fields, and `value` must match its declared type — using .set() on a multiple
-   * field is a compile error before it is a runtime one.
+   * A writable draft of ONE record, by id — existing, or a fixed-id creation
+   * (the server derives the verb from existence, §10.4). Property writes record
+   * intent; property reads return the current LOCAL value, so a draft can be
+   * read mid-transaction (`if (todo.completed) …`).
    */
-  set<E extends EntityDef, K extends SingleFieldKeys<E> & string>(
-    entity: E,
-    subject: Id,
-    field: K,
-    value: ValueOfField<E[K]>,
-  ): this {
+  edit<E extends EntityDef>(entity: E, subject: Id): Draft<E> {
     assertSubjectEntity(subject, entityName(entity));
-    const predicate = predicateOf(entity, field);
-    this.#operations.push({ op: "set", subject, predicate, value: value as Value });
-    if (fieldOf(this.schema, predicate).multiple) {
-      throw new Error(
-        `"${predicate}" is multiple — use .add() to append, not .set().`,
-      );
-    }
+    const lists = new Map<string, DraftList<Value>>();
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const tx = this;
+    return new Proxy({} as Draft<E>, {
+      get(_target, field) {
+        if (field === "id") return subject;
+        if (typeof field !== "string") return undefined;
+        const predicate = predicateOf(entity, field);
+        if (fieldOf(tx.schema, predicate).multiple) {
+          let list = lists.get(predicate);
+          if (!list) lists.set(predicate, (list = tx.#draftList(subject, predicate)));
+          return list;
+        }
+        return tx.#currentValues(subject, predicate)[0];
+      },
+      set(_target, field, value) {
+        if (typeof field !== "string" || field === "id") {
+          throw new Error(`Cannot assign "${String(field)}" on a draft.`);
+        }
+        const predicate = predicateOf(entity, field);
+        if (fieldOf(tx.schema, predicate).multiple) {
+          throw new Error(
+            `"${predicate}" is a list — mutate it (push/remove), never reassign it.`,
+          );
+        }
+        if (value === undefined) {
+          if (!fieldOf(tx.schema, predicate).optional) {
+            throw new Error(`"${predicate}" is required — it cannot be cleared.`);
+          }
+          tx.#recordClear(subject, predicate);
+        } else {
+          tx.#recordSet(subject, predicate, value as Value);
+        }
+        return true;
+      },
+    });
+  }
 
-    // If this transaction already set this field, drop that earlier add. Without
-    // this, set() twice in one transaction would emit two adds and the store — being
-    // a set — would end up holding both values.
+  /**
+   * Mint a record: a fresh id (client-side, §8.4) and one typed object whose
+   * REQUIRED fields the compiler enforces. Returns a draft for further edits.
+   */
+  create<E extends EntityDef>(entity: E, values: CreateValues<E>): Draft<E> {
+    const subject = newId(entityName(entity));
+    const draft = this.edit(entity, subject);
+    for (const [field, value] of Object.entries(values)) {
+      if (value === undefined) continue;
+      const predicate = predicateOf(entity, field);
+      if (fieldOf(this.schema, predicate).multiple) {
+        for (const entry of value as Value[]) this.#recordAdd(subject, predicate, entry);
+      } else {
+        this.#recordSet(subject, predicate, value as Value);
+      }
+    }
+    return draft;
+  }
+
+  /** The live local values of (subject, predicate): storage + this tx's edits. */
+  #currentValues(subject: Id, predicate: string): Value[] {
+    const values: Value[] = [];
+    for (const [, [s, p, o]] of this.#removedThenAddedView(subject, predicate)) {
+      void s; void p;
+      values.push(o);
+    }
+    return values;
+  }
+
+  /** Reader view for one (subject, predicate) honoring in-tx adds/removes. */
+  *#removedThenAddedView(subject: Id, predicate: string): Iterable<[string, Triple]> {
+    for (const triple of this.reader.match([subject, predicate, undefined])) {
+      const key = tripleKey(triple);
+      if (!this.#removed.has(key)) yield [key, triple];
+    }
+    for (const [key, triple] of this.#added) {
+      if (triple[0] === subject && triple[1] === predicate) yield [key, triple];
+    }
+  }
+
+  /** REPLACE intent: the §0.2 remove-half comes from the local view; the server
+   * re-derives it authoritatively (§9.1). */
+  #recordSet(subject: Id, predicate: string, value: Value): void {
+    this.#operations.push({ op: "set", subject, predicate, value });
     for (const [key, triple] of this.#added) {
       if (triple[0] === subject && triple[1] === predicate) this.#added.delete(key);
     }
-
-    // Remove the value currently in storage, if any. This is the half of the write
-    // that §0.2 is about. The server re-derives it authoritatively (§9.1).
     for (const existing of this.reader.match([subject, predicate, undefined])) {
       this.#pushRemove(existing);
     }
-
-    return this.#pushAdd([subject, predicate, value as Value]);
+    this.#pushAdd([subject, predicate, value]);
   }
 
-  /** Write a multi-valued field. APPENDS: existing values stay. Typed like .set(). */
-  add<E extends EntityDef, K extends MultiFieldKeys<E> & string>(
-    entity: E,
-    subject: Id,
-    field: K,
-    value: ValueOfField<E[K]>,
-  ): this {
-    assertSubjectEntity(subject, entityName(entity));
-    const predicate = predicateOf(entity, field);
-    this.#operations.push({ op: "add", subject, predicate, value: value as Value });
-    if (!fieldOf(this.schema, predicate).multiple) {
-      throw new Error(
-        `"${predicate}" is not multiple — use .set() to replace, not .add().`,
-      );
+  #recordAdd(subject: Id, predicate: string, value: Value): void {
+    this.#operations.push({ op: "add", subject, predicate, value });
+    this.#pushAdd([subject, predicate, value]);
+  }
+
+  #recordRemove(subject: Id, predicate: string, value: Value): void {
+    this.#operations.push({ op: "remove", subject, predicate, value });
+    this.#pushRemove([subject, predicate, value]);
+  }
+
+  /** `draft.optionalField = undefined` — remove every current value. */
+  #recordClear(subject: Id, predicate: string): void {
+    for (const value of this.#currentValues(subject, predicate)) {
+      this.#recordRemove(subject, predicate, value);
     }
-    return this.#pushAdd([subject, predicate, value as Value]);
   }
 
-  /** Remove one specific value. Works whether or not the field is multiple. */
-  remove<E extends EntityDef, K extends keyof E & string>(
-    entity: E,
-    subject: Id,
-    field: K,
-    value: ValueOfField<E[K]>,
-  ): this {
-    assertSubjectEntity(subject, entityName(entity));
-    const predicate = predicateOf(entity, field);
-    this.#operations.push({ op: "remove", subject, predicate, value: value as Value });
-    fieldOf(this.schema, predicate); // validate the predicate exists
-    return this.#pushRemove([subject, predicate, value as Value]);
+  /** A multi-valued field as a mutable-by-intent list. */
+  #draftList(subject: Id, predicate: string): DraftList<Value> {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const tx = this;
+    const base: unknown[] = [];
+    const list = Object.assign(base, {
+      push(...values: Value[]): void {
+        for (const value of values) tx.#recordAdd(subject, predicate, value);
+      },
+      remove(value: Value): void {
+        tx.#recordRemove(subject, predicate, value);
+      },
+    });
+    return new Proxy(list as unknown as DraftList<Value>, {
+      get(target, property) {
+        if (property === "push" || property === "remove") {
+          return (target as unknown as Record<string, unknown>)[property as string];
+        }
+        // Reads see LIVE local values — storage plus this tx's edits.
+        const values = tx.#currentValues(subject, predicate);
+        if (property === "length") return values.length;
+        if (typeof property === "string" && /^\d+$/.test(property)) {
+          return values[Number(property)];
+        }
+        const method = (values as unknown as Record<string | symbol, unknown>)[property];
+        return typeof method === "function" ? (method as Function).bind(values) : method;
+      },
+    });
   }
 
   /**

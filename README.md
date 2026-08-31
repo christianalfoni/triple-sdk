@@ -114,7 +114,9 @@ on Ada's team todo. Chosen so the per-field override, the fan-out, and every
 recovery branch show up:
 
 ```ts
-await client.transact((tx) => tx.set(Todo, "todo_3", "completed", true));
+await client.transact((tx) => {
+  tx.edit(Todo, "todo_3").completed = true; // a DRAFT: property write → intent
+});
 ```
 
 ### Down

@@ -18,7 +18,7 @@
  * `from` defines ONE unit, `build` assembles them — the same pairing the policy
  * side uses (`Policy.from` / `Policy.build`, §10). `Schema.build` STAMPS each
  * entity with its key (a hidden symbol property), which is how `Query.from(Todo)`
- * and `tx.set(Todo, …)` know the predicate namespace without being handed the
+ * and `tx.edit(Todo, …)` know the predicate namespace without being handed the
  * registry — see `entityName`.
  *
  * `Schema.ref(User)` carries the target in the type, which is what lets query
@@ -175,7 +175,7 @@ export class AppSchema<Es extends Entities = Entities> {
 
   constructor(readonly entities: Es) {
     // The key IS the name: stamp it onto each entity so standalone call sites
-    // (Query.from(Todo), tx.set(Todo, …)) can resolve predicates later.
+    // (Query.from(Todo), tx.edit(Todo, …)) can resolve predicates later.
     for (const [name, entity] of Object.entries(entities)) {
       const stamped = (entity as { [ENTITY_NAME]?: string })[ENTITY_NAME];
       if (stamped !== undefined && stamped !== name) {
