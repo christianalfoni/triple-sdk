@@ -25,8 +25,8 @@ export default {
       if (path === "/api/me") return json(200, identity);
       if (path === "/api/workspaces") return json(200, await memberships(identity, env));
 
-      const match = /^\/w\/([\w-]+)\/api\//.exec(path);
-      if (!match) return json(404, { error: "expected /w/<workspace>/api/*" });
+      const match = /^\/w\/([\w-]+)\/(api\/|mcp$|apps\/)/.exec(path);
+      if (!match) return json(404, { error: "expected /w/<workspace>/{api,apps,mcp}" });
       const org = match[1]!;
       if (!(await isMember(identity, org, env))) {
         return json(403, { error: "not a member of this workspace" });

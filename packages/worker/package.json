@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "wrangler dev --local --port 8787",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx smoke.ts"
+    "smoke": "tsx smoke.ts",
+    "platform:build": "esbuild platform-entry.ts --bundle --format=esm --external:react --external:react/jsx-runtime --external:react-dom/client --outfile=../app/dist/platform/sdk.js && esbuild ../schema/src/index.ts --bundle --format=esm --external:triple-sdk/schema --outfile=../app/dist/platform/schema.js",
+    "seed": "tsx seed.ts"
   },
   "dependencies": {
     "app-schema": "workspace:*",
@@ -16,6 +18,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "wrangler": "^4.127.1",
-    "@types/node": "^24.0.0"
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0"
   }
 }

@@ -249,7 +249,7 @@ A pnpm monorepo: the SDK, and a real service built on it.
 |---|---|
 | [`packages/sdk`](packages/sdk) | **triple-sdk** — everything documented here, plus its demo and test harness (`smoke`, `invariant`, `bench`, `hooks`) |
 | [`packages/schema`](packages/schema) | the service's shared SHAPE — the §10.1 trust boundary as a package boundary |
-| [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets |
+| [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets — and an MCP endpoint per workspace where coding agents deploy apps by writing files |
 | [`packages/app`](packages/app) | the React app: private todos, a shared board, live presence — `useQuery`/`useTransaction` all the way down |
 
 The service in one sentence: **workspace = WorkOS organization = one Durable
@@ -275,10 +275,32 @@ records the three measured burn-downs behind the numbers.
 ## Run it
 
 ```bash
-npm run dev        # demo at localhost:5173 — open TWO windows, they sync live
-npm run smoke      # 35 steps against a real server (memory or RDF_DB= sqlite)
-npm run invariant  # state === fold(log), both adapters · policy · repair proofs
-npm run bench      # the measurements
-npm run typecheck  # the type-level tests — typecheck IS the test
-npm run do:dev     # the same cell on Cloudflare's workerd (then do:smoke, do:bench)
+pnpm dev           # demo at localhost:5173 — open TWO windows, they sync live
+pnpm smoke         # 36 steps against a real server (memory or RDF_DB= sqlite)
+pnpm invariant     # state === fold(log), both adapters · policy · repair proofs
+pnpm bench         # the measurements
+pnpm typecheck     # the type-level tests — typecheck IS the test
+pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
+pnpm service:smoke # 7 steps of privacy, override, rejection, live revocation
 ```
+
+### The workspace as a platform
+
+Each workspace cell also speaks [MCP](https://modelcontextprotocol.io) — a
+coding agent connects to `/w/<workspace>/mcp` and gets `get_schema`,
+`write_file`, and a permission-filtered `query`. Writing a file IS deployment:
+apps are plain ES modules served at `/w/<workspace>/apps/<app>/` under an
+implicit shell (Tailwind + an import map that resolves `triple-sdk/*`,
+`schema`, and `htm/preact` — React maps to preact/compat, so the SDK's hooks
+run without a build step). Apps are pure clients: they hit the same `/api` as
+everything else, as the signed-in viewer, under the same policy.
+
+Try it locally (no WorkOS needed — `packages/worker/.dev.vars` sets `DEV_AUTH=1`):
+
+```bash
+pnpm app:build && pnpm --filter worker platform:build
+pnpm service:dev                  # then, once up: pnpm --filter worker seed
+```
+
+Point an MCP client at `http://localhost:8787/w/org_dev/mcp`, ask it to build
+an app, and open the URL `write_file` returns.
