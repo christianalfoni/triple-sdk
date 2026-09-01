@@ -15,7 +15,9 @@ class_name = "WorkspaceCell"
 tag = "v1"
 new_sqlite_classes = ["WorkspaceCell"]
 
-[vars]
-# Local/dev only — remove (or set to "0") in production and configure WorkOS
-# secrets instead: wrangler secret put WORKOS_CLIENT_ID / WORKOS_API_KEY
-DEV_AUTH = "1"
+# Auth config is deliberately NOT here: DEV_AUTH=1 lives in .dev.vars (local
+# only, gitignored) so a deploy can never ship with the bypass on. Production
+# gets WorkOS credentials via secrets:
+#   wrangler secret put WORKOS_CLIENT_ID
+#   wrangler secret put WORKOS_API_KEY
+# With neither DEV_AUTH nor secrets set, every request 401s — failing safe.

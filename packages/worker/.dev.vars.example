@@ -1,6 +1,7 @@
-# Local dev runs keyless with DEV_AUTH=1 (set in wrangler.toml [vars]).
-# For real auth: copy to .dev.vars, set DEV_AUTH=0, and fill these in
-# (production uses `wrangler secret put` instead):
-DEV_AUTH=0
-WORKOS_CLIENT_ID=client_...
-WORKOS_API_KEY=sk_...
+# Local dev: DEV_AUTH=1 (keyless bypass). This file documents the variables;
+# the real .dev.vars is gitignored. For real auth locally, set DEV_AUTH=0 and
+# fill in the WorkOS credentials. Production never uses this file — it uses
+# `wrangler secret put` for the two WorkOS values and has no DEV_AUTH at all.
+DEV_AUTH=1
+#WORKOS_CLIENT_ID=client_...
+#WORKOS_API_KEY=sk_...
