@@ -1,0 +1,52 @@
+{
+  "name": "triple-sdk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch src/demo/server/main.ts",
+    "dev:client": "vite",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx src/demo/smoke.ts",
+    "bench": "tsx src/demo/bench.ts",
+    "invariant": "tsx src/demo/invariant.ts",
+    "hooks": "tsx src/demo/hooks-check.tsx",
+    "do:dev": "wrangler dev --local --port 8787",
+    "do:smoke": "SMOKE_API=http://localhost:8787/w/smoke-run/api tsx src/demo/smoke.ts",
+    "do:bench": "BENCH_API=http://localhost:8787/w/bench-run/api tsx src/demo/dobench.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260830.1",
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "happy-dom": "^20.12.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "wrangler": "^4.127.1"
+  },
+  "dependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "exports": {
+    "./schema": "./src/sdk/shared/schema.ts",
+    "./query": "./src/sdk/shared/query.ts",
+    "./transaction": "./src/sdk/shared/transaction.ts",
+    "./types": "./src/sdk/shared/types.ts",
+    "./protocol": "./src/sdk/shared/protocol.ts",
+    "./storage": "./src/sdk/shared/storage.ts",
+    "./client": "./src/sdk/client/index.ts",
+    "./react": "./src/sdk/client/react.ts",
+    "./server": "./src/sdk/server/server.ts",
+    "./server/policy": "./src/sdk/server/policy.ts",
+    "./server/http": "./src/sdk/server/http.ts",
+    "./server/fetch": "./src/sdk/server/fetch.ts",
+    "./server/sqlite": "./src/sdk/server/sqlite.ts",
+    "./server/durable": "./src/sdk/server/durable.ts",
+    "./server/cells": "./src/sdk/server/cells.ts"
+  }
+}

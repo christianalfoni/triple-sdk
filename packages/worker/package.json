@@ -1,0 +1,21 @@
+{
+  "name": "worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx smoke.ts"
+  },
+  "dependencies": {
+    "app-schema": "workspace:*",
+    "triple-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260830.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.127.1",
+    "@types/node": "^24.0.0"
+  }
+}

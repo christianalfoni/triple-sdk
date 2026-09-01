@@ -1,35 +1,24 @@
 {
-  "name": "rdf-sdk",
+  "name": "triple",
   "private": true,
-  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "tsx watch src/demo/server/main.ts",
-    "dev:client": "vite",
-    "typecheck": "tsc --noEmit",
-    "smoke": "tsx src/demo/smoke.ts",
-    "bench": "tsx src/demo/bench.ts",
-    "invariant": "tsx src/demo/invariant.ts",
-    "hooks": "tsx src/demo/hooks-check.tsx",
-    "do:dev": "wrangler dev --local --port 8787",
-    "do:smoke": "SMOKE_API=http://localhost:8787/w/smoke-run/api tsx src/demo/smoke.ts",
-    "do:bench": "BENCH_API=http://localhost:8787/w/bench-run/api tsx src/demo/dobench.ts"
+    "typecheck": "pnpm -r typecheck",
+    "smoke": "pnpm --filter triple-sdk smoke",
+    "invariant": "pnpm --filter triple-sdk invariant",
+    "bench": "pnpm --filter triple-sdk bench",
+    "hooks": "pnpm --filter triple-sdk hooks",
+    "dev": "pnpm --filter triple-sdk dev",
+    "service:dev": "pnpm --filter worker dev",
+    "service:smoke": "pnpm --filter worker smoke",
+    "app:dev": "pnpm --filter app dev",
+    "app:build": "pnpm --filter app build"
   },
-  "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260830.1",
-    "@types/node": "^22.10.2",
-    "concurrently": "^9.1.0",
-    "happy-dom": "^20.12.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.5",
-    "wrangler": "^4.127.1"
-  },
-  "dependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd",
+      "sharp"
+    ]
   }
 }

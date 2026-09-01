@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f4f6fa; color: #1c2230; }
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px 64px; }
+.center { display: grid; place-items: center; min-height: 60vh; text-align: center; }
+.top { display: flex; align-items: baseline; gap: 12px; }
+.top h1 { font-size: 22px; margin: 0; flex: 1; }
+.stats { font-size: 12px; color: #5c6577; font-variant-numeric: tabular-nums; }
+.link { background: none; border: none; color: #3055c4; cursor: pointer; font-size: 13px; text-decoration: underline; padding: 0; }
+.panel { background: #fff; border: 1px solid #d7dce6; border-radius: 10px; padding: 12px 16px; margin-top: 16px; }
+.panel h2 { font-size: 13px; color: #5c6577; font-weight: 600; margin: 0 0 8px; }
+.panel ul { list-style: none; margin: 0; padding: 0; }
+.panel li { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid #eef1f7; }
+.panel li:first-child { border-top: none; }
+.panel li.done .text { text-decoration: line-through; color: #8b93a7; }
+.text { flex: 1; }
+.owner { font-size: 12px; color: #5c6577; }
+.panel button { font-size: 12px; border: 1px solid #d7dce6; background: #f4f6fa; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.new { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
+.new input[name="text"] { flex: 1; padding: 8px 10px; border: 1px solid #d7dce6; border-radius: 8px; }
+.new label { font-size: 13px; color: #5c6577; display: flex; gap: 4px; align-items: center; }
+.new button[type="submit"] { padding: 8px 14px; border: none; border-radius: 8px; background: #3055c4; color: #fff; cursor: pointer; }
+.workspaces { list-style: none; padding: 0; display: grid; gap: 8px; }
+.workspaces button { padding: 10px 18px; border: 1px solid #d7dce6; border-radius: 8px; background: #fff; cursor: pointer; font-size: 15px; }

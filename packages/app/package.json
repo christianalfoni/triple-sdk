@@ -1,0 +1,22 @@
+{
+  "name": "app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "app-schema": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "triple-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0"
+  }
+}

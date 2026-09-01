@@ -1,0 +1,21 @@
+name = "todo-cells"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "../app/dist"
+not_found_handling = "single-page-application"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "CELL"
+class_name = "WorkspaceCell"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WorkspaceCell"]
+
+[vars]
+# Local/dev only — remove (or set to "0") in production and configure WorkOS
+# secrets instead: wrangler secret put WORKOS_CLIENT_ID / WORKOS_API_KEY
+DEV_AUTH = "1"

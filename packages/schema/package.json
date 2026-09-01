@@ -1,0 +1,9 @@
+{
+  "name": "app-schema",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "triple-sdk": "workspace:*" },
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "devDependencies": { "typescript": "^5.9.3" }
+}

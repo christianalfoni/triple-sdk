@@ -34,12 +34,16 @@ export interface Transport {
 
 /** HTTP for request/response, Server-Sent Events for the delta stream. */
 export class HttpTransport implements Transport {
-  constructor(private readonly baseUrl = "/api") {}
+  constructor(
+    private readonly baseUrl = "/api",
+    /** Sent with every request AND the delta stream — where auth rides. */
+    private readonly headers: Record<string, string> = {},
+  ) {}
 
   async query(message: QueryMessage): Promise<QueryResultMessage> {
     const res = await fetch(`${this.baseUrl}/query`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { ...this.headers, "content-type": "application/json" },
       body: JSON.stringify(message),
     });
     if (res.status === 409) throw new SchemaMismatchError();
@@ -50,7 +54,7 @@ export class HttpTransport implements Transport {
   async broadcast(message: BroadcastMessage): Promise<void> {
     await fetch(`${this.baseUrl}/broadcast`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { ...this.headers, "content-type": "application/json" },
       body: JSON.stringify(message),
     });
   }
@@ -58,7 +62,7 @@ export class HttpTransport implements Transport {
   async transact(message: TransactMessage): Promise<AckMessage | RejectMessage> {
     const res = await fetch(`${this.baseUrl}/transact`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { ...this.headers, "content-type": "application/json" },
       body: JSON.stringify(message),
     });
     if (res.status === 409) throw new SchemaMismatchError();
@@ -80,7 +84,7 @@ export class HttpTransport implements Transport {
           const since = getSince();
           const query = since > 0 ? `?since=${since}` : "";
           const res = await fetch(`${this.baseUrl}/subscribe${query}`, {
-            headers: { accept: "text/event-stream" },
+            headers: { ...this.headers, accept: "text/event-stream" },
             signal: controller.signal,
           });
           if (!res.ok || !res.body) throw new Error(`subscribe failed: ${res.status}`);

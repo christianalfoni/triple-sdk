@@ -1,0 +1,6 @@
+# Local dev runs keyless with DEV_AUTH=1 (set in wrangler.toml [vars]).
+# For real auth: copy to .dev.vars, set DEV_AUTH=0, and fill these in
+# (production uses `wrangler secret put` instead):
+DEV_AUTH=0
+WORKOS_CLIENT_ID=client_...
+WORKOS_API_KEY=sk_...

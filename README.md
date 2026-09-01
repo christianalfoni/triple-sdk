@@ -241,6 +241,22 @@ npm run typecheck    # the type tests ARE tests
 RDF_DB=.data/app.db npm run dev    # durable: survives restarts, clients replay the log
 ```
 
+## The repo
+
+A pnpm monorepo: the SDK, and a real service built on it.
+
+| package | what it is |
+|---|---|
+| [`packages/sdk`](packages/sdk) | **triple-sdk** — everything documented here, plus its demo and test harness (`smoke`, `invariant`, `bench`, `hooks`) |
+| [`packages/schema`](packages/schema) | the service's shared SHAPE — the §10.1 trust boundary as a package boundary |
+| [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets |
+| [`packages/app`](packages/app) | the React app: private todos, a shared board, live presence — `useQuery`/`useTransaction` all the way down |
+
+The service in one sentence: **workspace = WorkOS organization = one Durable
+Object**; the edge decides who may enter a workspace, the policy decides what
+they see and touch inside — and unsharing a todo is a live revocation other
+members watch happen (`pnpm service:smoke` proves it end to end, keylessly).
+
 ## Going deeper
 
 Mechanism docs — one page each, mechanism first, API second:
