@@ -21,3 +21,12 @@ main { max-width: 640px; margin: 0 auto; padding: 24px 16px 64px; }
 .new button[type="submit"] { padding: 8px 14px; border: none; border-radius: 8px; background: #3055c4; color: #fff; cursor: pointer; }
 .workspaces { list-style: none; padding: 0; display: grid; gap: 8px; }
 .workspaces button { padding: 10px 18px; border: 1px solid #d7dce6; border-radius: 8px; background: #fff; cursor: pointer; font-size: 15px; }
+.muted { color: #5c6577; font-size: 14px; }
+.badge { font-size: 11px; border-radius: 999px; background: #eef1f7; padding: 1px 8px; color: #3b4356; }
+.button { display: inline-block; padding: 10px 18px; border-radius: 8px; background: #3055c4; color: #fff; text-decoration: none; }
+.primary { padding: 8px 14px; border: none; border-radius: 8px; background: #3055c4; color: #fff; cursor: pointer; }
+.code { font: 12px/1.5 ui-monospace, monospace; background: #1c2230; color: #e6ebf5; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #d7dce6; display: inline-block; }
+.dot.online { background: #2fb673; }
+.panel a { color: #3055c4; }
+.new input[name="email"], .new input[name="name"] { flex: 1; padding: 8px 10px; border: 1px solid #d7dce6; border-radius: 8px; }

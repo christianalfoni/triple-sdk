@@ -967,7 +967,7 @@ A pnpm monorepo: the SDK, and a real service built on it.
 | [`packages/schema`](packages/schema) | the service's shared SHAPE — the §10.1 trust boundary as a package boundary |
 | [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets |
 | [`packages/platform`](packages/platform) | **workspace-platform** — apps as data: an MCP endpoint per workspace where coding agents write drafts and publish releases, all entities under the workspace's own policy ([its README](packages/platform/README.md) documents the protocol) |
-| [`packages/app`](packages/app) | the React app: private todos, a shared board, live presence — `useQuery`/`useTransaction` all the way down |
+| [`packages/console`](packages/console) | the service's website: sign in, create or pick a workspace, its apps and members, the agent hookup (token + MCP URL) |
 
 ```
 packages/sdk/src/sdk/shared/   types · value · store · storage · schema · query · transaction · protocol
@@ -992,7 +992,8 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 13 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites
+pnpm service:smoke # 16 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens
+pnpm console:dev   # the console on :5173, proxied to the worker
 ```
 
 ### The workspace as a platform
@@ -1011,9 +1012,11 @@ same policy. The protocol, the model and the trade-offs are in
 Try it locally (no WorkOS needed — `packages/worker/.dev.vars` sets `DEV_AUTH=1`):
 
 ```bash
-pnpm app:build && pnpm --filter worker platform:build
+pnpm console:build && pnpm --filter worker platform:build
 pnpm service:dev                  # then, once up: pnpm --filter worker seed
 ```
 
-Point an MCP client at `http://localhost:8787/w/org_dev/mcp`, ask it to build
-an app, and open the URL `publish` returns.
+The seed publishes two starter apps into `org_dev` through MCP — `todos` (the
+board this repo proved the SDK with) and `members`. Open
+http://localhost:8787 for the console, or point an MCP client at
+`http://localhost:8787/w/org_dev/mcp` and ask it for the next app.

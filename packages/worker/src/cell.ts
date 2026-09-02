@@ -61,6 +61,20 @@ export class WorkspaceCell {
       });
     }
 
+    // Who am I, IN THIS WORKSPACE — the edge's verified headers, as the cell
+    // sees them. Anonymous callers get a 401 so an app can offer sign-in.
+    if (workspacePath === "/api/me") {
+      if (actor === "anonymous") return Promise.resolve(json(401, { error: "sign in first", actor: "anonymous" }));
+      return Promise.resolve(
+        json(200, {
+          actor,
+          name: request.headers.get("x-actor-name"),
+          email: request.headers.get("x-actor-email") ?? undefined,
+          role: request.headers.get("x-actor-role"),
+        }),
+      );
+    }
+
     // …/apps/<name> → …/apps/<name>/ so an app's relative imports resolve.
     if (/^\/apps\/[\w-]+(\/draft)?$/.test(workspacePath)) {
       return Promise.resolve(Response.redirect(`${url.origin}${url.pathname}/`, 308));
@@ -90,4 +104,8 @@ export class WorkspaceCell {
     draft.email = email;
     this.#server.commit(tx, actor);
   }
+}
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }

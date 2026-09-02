@@ -113,16 +113,22 @@ plus Tailwind from its CDN, `<div id="root">`, and `<script type="module"
 src="./app.js">`. The two `/platform/*` bundles are static assets built once at
 deploy (`pnpm --filter worker platform:build`), not per-workspace data.
 
-From inside an app, on either channel:
+From inside an app, on either channel, `auth` is the third platform module:
 
 ```js
-const apiBase = location.pathname.replace(/\/apps\/.*$/, "/api");   // this workspace's /api
-const me = await (await fetch("/api/me")).json();                    // { actor, name } — auth is ambient
-const client = new TripleClient({ schema, transport: new HttpTransport(apiBase) });
+import { auth } from "auth";
+const me = await auth.me();                 // { actor, name, email?, role } — or null: nobody is signed in
+if (!me) auth.login();                      // AuthKit (Google, Microsoft, passkeys, …), then back here
+const client = new TripleClient({ schema, transport: new HttpTransport(auth.apiBase) });
 ```
 
-Apps are pure clients: they hit the same `/api` as everything else, as the
-signed-in viewer, under the same policy.
+Auth is ambient — a cookie the edge set at sign-in — so there is nothing to
+attach; `auth.me()` asks *this workspace* who the cookie belongs to and gets
+their role in it. Apps are pure clients: they hit the same `/api` as everything
+else, as the signed-in viewer, under the same policy. The worker ships two
+starter apps written exactly this way ([`apps/todos`](../worker/apps/todos/app.js),
+[`apps/members`](../worker/apps/members/app.js)); the seed publishes them
+through MCP.
 
 ## The MCP protocol
 
@@ -131,13 +137,24 @@ one `POST` to the workspace's `/mcp` with a JSON-RPC 2.0 body; there is no
 session and nothing to keep open, which is what lets it ride the Durable
 Object request model like any API call. Identity comes from the connection,
 exactly as for `/api` — the edge verifies the member and rewrites the actor
-headers before the cell sees the request.
+headers before the cell sees the request. An agent has no browser cookie, so
+it carries a **workspace token**: a signed-in member mints one in the console
+(`POST /w/<workspace>/api/tokens` → `wt_…`, thirty days, scoped to that one
+workspace — refused anywhere else), and the agent sends it as a bearer.
 
 ```
 POST /w/<workspace>/mcp
+authorization: Bearer wt_…
 content-type: application/json
 accept: application/json, text/event-stream
 ```
+
+```bash
+claude mcp add --transport http workspace https://…/w/<workspace>/mcp --header "Authorization: Bearer wt_…"
+```
+
+(The MCP specification's own OAuth 2.1 flow, with AuthKit as the authorization
+server, is the eventual replacement; it ends at the same actor headers.)
 
 | method | result |
 |---|---|

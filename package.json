@@ -11,8 +11,8 @@
     "dev": "pnpm --filter triple-sdk dev",
     "service:dev": "pnpm --filter worker dev",
     "service:smoke": "pnpm --filter worker smoke",
-    "app:dev": "pnpm --filter app dev",
-    "app:build": "pnpm --filter app build"
+    "console:dev": "pnpm --filter console dev",
+    "console:build": "pnpm --filter console build"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

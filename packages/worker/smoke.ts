@@ -164,20 +164,22 @@ log("live version", "a draft edit leaves live alone · publish 2 → bob's runni
 //    member; anonymous is not signed in. Both reach the same /api, same policy.
 const appUser = identity("user_appuser", "App User", "appUser", "appuser@example.com");
 const anonymous = { "x-actor": "anonymous" };
-const open = async (path: string, who: Record<string, string>) => (await fetch(`${appUrl}${path}`, { headers: who })).status;
+// Anonymous callers are not refused, they are sent to sign in (302) — never follow it here.
+const open = async (path: string, who: Record<string, string>) =>
+  (await fetch(`${appUrl}${path}`, { headers: who, redirect: "manual" })).status;
 
 if ((await open("/", appUser)) !== 404) fail("an app user opened a members-only app");
-if ((await open("/", anonymous)) !== 404) fail("anonymous opened a members-only app");
+if ((await open("/", anonymous)) !== 302) fail("anonymous was not sent to sign in on a members-only app");
 await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "invited" });
 await mcp("user_alice", "Alice", "invite_to_app", { app: "hello", email: "appuser@example.com" });
 if ((await open("/", appUser)) !== 200) fail("an invited app user could not open the app");
 if ((await open("/draft/", appUser)) !== 404) fail("an app user saw the draft");
-if ((await open("/", anonymous)) !== 404) fail("anonymous opened an invited app");
+if ((await open("/", anonymous)) !== 302) fail("anonymous was not sent to sign in on an invited app");
 if ((await open("/", identity("user_bob", "Bob"))) !== 404) fail("an unlisted member opened an invited app");
 if ((await open("/", identity("user_alice", "Alice", "admin"))) !== 200) fail("the admin could not open the invited app");
 await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "public" });
 if ((await open("/", anonymous)) !== 200) fail("anonymous could not open a public app");
-log("audiences", "members-only 404s app users · invited admits the listed app user and admins, not bob (unlisted member) nor anonymous · public admits anonymous · drafts stay members-only");
+log("audiences", "members-only 404s app users · invited admits the listed app user and admins, not bob (unlisted member) · anonymous is sent to sign in · public admits anonymous · drafts stay members-only");
 
 // -- an app user's data world is their own rows. The board is for members.
 await alice.transact((tx) => {
@@ -204,6 +206,29 @@ if (!refused.text.includes("admin")) fail(`a member invited someone: ${refused.t
 const invited = await mcp("user_alice", "Alice", "invite_member", { email: "carol@example.com", role: "member" });
 if (!invited.includes("carol@example.com")) fail(`the admin's invite failed: ${invited}`);
 log("invite member", `bob (member) is refused · alice (admin): ${invited}`);
+
+// -- THE CONSOLE'S CONTRACT: sign-in comes back to where you were; an agent
+//    carries a workspace token instead of a cookie; a workspace is one POST.
+await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "members" });
+const bounced = await fetch(`${appUrl}/`, { headers: anonymous, redirect: "manual" });
+const location = bounced.headers.get("location") ?? "";
+if (bounced.status !== 302 || !location.includes("/auth/login?return_to=")) fail(`anonymous on a members app: ${bounced.status} ${location}`);
+log("return_to", `anonymous on a members-only app → 302 ${new URL(location).pathname}?return_to=…/apps/hello/`);
+
+const minted = (await (await fetch(`${base}/w/${org}/api/tokens`, { method: "POST", headers: identity("user_alice", "Alice") })).json()) as { token: string; mcp: string };
+if (!minted.token.startsWith("wt_")) fail(`no token: ${JSON.stringify(minted)}`);
+const asAgent = await mcpCall({ authorization: `Bearer ${minted.token}` }, "list_apps", {});
+if (asAgent.isError || !asAgent.text.includes("hello")) fail(`token MCP call failed: ${asAgent.text}`);
+const elsewhere = await fetch(`${base}/w/org_other/mcp`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: "{}" });
+if (elsewhere.status !== 403) fail(`a token crossed workspaces: ${elsewhere.status}`);
+log("agent token", `POST /api/tokens → wt_… · MCP with only the bearer lists apps · the same token on another workspace: 403`);
+
+const created = (await (await fetch(`${base}/api/workspaces`, { method: "POST", headers: { ...identity("user_alice", "Alice"), "content-type": "application/json" }, body: JSON.stringify({ name: "Smoke Co" }) })).json()) as { id: string; role: string };
+const listed = (await (await fetch(`${base}/api/workspaces`, { headers: identity("user_alice", "Alice") })).json()) as { id: string }[];
+if (created.role !== "admin" || !listed.some((w) => w.id === created.id)) fail(`workspace not created: ${JSON.stringify(created)}`);
+const fresh = await fetch(`${base}/w/${created.id}/api/me`, { headers: identity("user_alice", "Alice", "admin") });
+if (fresh.status !== 200) fail(`the new workspace's cell did not answer: ${fresh.status}`);
+log("create workspace", `POST /api/workspaces → ${created.id} as admin · listed · its cell answers /api/me on first contact`);
 
 console.log("service smoke: all green");
 process.exit(0);

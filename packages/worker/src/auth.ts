@@ -14,7 +14,13 @@ export type Env = {
   WORKOS_API_KEY?: string;
 };
 
-export type Identity = { actor: string; name: string; email?: string };
+export type Identity = {
+  actor: string;
+  name: string;
+  email?: string;
+  /** Set when the identity came from a workspace token: the ONE workspace it may address. */
+  org?: string;
+};
 
 /** An actor's standing in ONE workspace: organization roles, or `appUser` for a signed-in non-member. */
 export type Role = "admin" | "member" | "appUser";
@@ -26,6 +32,10 @@ const WORKOS = "https://api.workos.com";
 // ---------------------------------------------------------------------------
 
 export async function identify(request: Request, env: Env): Promise<Identity | null> {
+  // An agent has no browser cookie: it carries a workspace token the console
+  // minted for a signed-in member (`POST /w/<org>/api/tokens`).
+  const bearer = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
+  if (bearer) return openToken(bearer, env);
   if (env.DEV_AUTH === "1") {
     // Dev: headers stand in for WorkOS. `x-actor: anonymous` simulates "not signed in".
     const actor = request.headers.get("x-actor") ?? "user_dev";
@@ -50,13 +60,44 @@ export async function identify(request: Request, env: Env): Promise<Identity | n
   };
 }
 
+/** Dev only: workspaces created this session, so the console can list them without WorkOS. */
+const devWorkspaces = new Map<string, { id: string; name: string }>();
+
+/**
+ * Create a workspace: a WorkOS organization, with the creator as its first
+ * admin. The cell needs no creation step — `idFromName(org)` materializes it
+ * on first request.
+ */
+export async function createWorkspace(
+  identity: Identity,
+  name: string,
+  env: Env,
+): Promise<{ id: string; name: string; role: "admin" }> {
+  if (env.DEV_AUTH === "1") {
+    const id = `org_${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workspace"}`;
+    devWorkspaces.set(id, { id, name });
+    return { id, name, role: "admin" };
+  }
+  const organization = (await workosPost(env, "/organizations", { name })) as { id: string; name: string };
+  await workosPost(env, "/user_management/organization_memberships", {
+    user_id: identity.actor,
+    organization_id: organization.id,
+    role_slug: "admin",
+  });
+  membershipCache.delete(identity.actor);
+  return { id: organization.id, name: organization.name, role: "admin" };
+}
+
 /** The organizations this user belongs to, with their role in each — WorkOS is the workspace directory. */
 export async function memberships(
   identity: Identity,
   env: Env,
 ): Promise<{ id: string; name: string; role: "admin" | "member" }[]> {
   if (env.DEV_AUTH === "1") {
-    return [{ id: "org_dev", name: "Dev Workspace", role: "member" }];
+    return [
+      { id: "org_dev", name: "Dev Workspace", role: "admin" },
+      ...[...devWorkspaces.values()].map((workspace) => ({ ...workspace, role: "admin" as const })),
+    ];
   }
   const response = await workos(
     env,
@@ -86,8 +127,10 @@ export async function memberships(
  */
 export async function roleIn(request: Request, identity: Identity, org: string, env: Env): Promise<Role> {
   if (env.DEV_AUTH === "1") {
+    // Dev: whoever you claim to be is an admin unless you say otherwise — you
+    // are playing with your own workspace.
     const claimed = request.headers.get("x-actor-role");
-    return claimed === "admin" || claimed === "appUser" ? claimed : "member";
+    return claimed === "member" || claimed === "appUser" ? claimed : "admin";
   }
   const cached = membershipCache.get(identity.actor);
   const roles =
@@ -127,17 +170,26 @@ export async function inviteMember(
 // Login flow
 // ---------------------------------------------------------------------------
 
+/** Where to land after sign-in: a same-site path, or `/`. Never an absolute URL. */
+function returnTo(raw: string | null): string {
+  return raw && raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
+}
+
 export function loginRedirect(request: Request, env: Env): Response {
-  if (env.DEV_AUTH === "1") return Response.redirect(new URL("/", request.url).toString(), 302);
+  const back = returnTo(new URL(request.url).searchParams.get("return_to"));
+  if (env.DEV_AUTH === "1") return Response.redirect(new URL(back, request.url).toString(), 302);
   const redirectUri = new URL("/auth/callback", request.url).toString();
   const url =
     `${WORKOS}/user_management/authorize?client_id=${env.WORKOS_CLIENT_ID}` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&provider=authkit`;
+    `&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&provider=authkit` +
+    `&state=${encodeURIComponent(back)}`;
   return Response.redirect(url, 302);
 }
 
 export async function loginCallback(request: Request, env: Env): Promise<Response> {
-  const code = new URL(request.url).searchParams.get("code");
+  const params = new URL(request.url).searchParams;
+  const code = params.get("code");
+  const back = returnTo(params.get("state"));
   if (!code) return new Response("missing code", { status: 400 });
   const body = new URLSearchParams({
     client_id: env.WORKOS_CLIENT_ID ?? "",
@@ -159,7 +211,7 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
     [result.user.first_name, result.user.last_name].filter(Boolean).join(" ") ||
     result.user.email || result.user.id;
   const profile = await sealProfile({ name, email: result.user.email }, env);
-  const headers = new Headers({ location: "/" });
+  const headers = new Headers({ location: back });
   const attrs = "HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=28800";
   headers.append("set-cookie", `session=${result.access_token}; ${attrs}`);
   headers.append("set-cookie", `profile=${profile}; ${attrs}`);
@@ -215,22 +267,48 @@ async function hmacKey(env: Env): Promise<CryptoKey> {
   );
 }
 
-async function sealProfile(profile: { name: string; email?: string }, env: Env): Promise<string> {
-  const body = btoa(JSON.stringify(profile));
-  const mac = await crypto.subtle.sign("HMAC", await hmacKey(env), new TextEncoder().encode(body));
+/** Seal a JSON value under a purpose-tagged HMAC (a profile can never pass as a token). UTF-8 safe. */
+async function seal(purpose: string, value: unknown, env: Env): Promise<string> {
+  const body = b64urlEncode(new TextEncoder().encode(JSON.stringify(value)));
+  const mac = await crypto.subtle.sign("HMAC", await hmacKey(env), new TextEncoder().encode(`${purpose}:${body}`));
   return `${body}.${b64urlEncode(new Uint8Array(mac))}`;
 }
 
-async function openProfile(
-  sealed: string | undefined, env: Env,
-): Promise<{ name: string; email?: string } | null> {
+async function open<T>(purpose: string, sealed: string | undefined, env: Env): Promise<T | null> {
   if (!sealed) return null;
   const [body, mac] = sealed.split(".");
   if (!body || !mac) return null;
   const ok = await crypto.subtle.verify(
-    "HMAC", await hmacKey(env), b64url(mac), new TextEncoder().encode(body),
+    "HMAC", await hmacKey(env), b64url(mac), new TextEncoder().encode(`${purpose}:${body}`),
   );
-  return ok ? (JSON.parse(atob(body)) as { name: string; email?: string }) : null;
+  return ok ? (JSON.parse(new TextDecoder().decode(b64url(body))) as T) : null;
+}
+
+const sealProfile = (profile: { name: string; email?: string }, env: Env) => seal("profile", profile, env);
+const openProfile = (sealed: string | undefined, env: Env) =>
+  open<{ name: string; email?: string }>("profile", sealed, env);
+
+/**
+ * A workspace token: a signed-in member's identity, scoped to ONE workspace,
+ * for clients that have no browser — an agent's MCP client. Thirty days.
+ */
+export async function mintToken(identity: Identity, org: string, env: Env): Promise<{ token: string; expires: number }> {
+  const expires = Date.now() + 30 * 86_400_000;
+  const token = await seal(
+    "token",
+    { actor: identity.actor, name: identity.name, email: identity.email, org, expires },
+    env,
+  );
+  return { token: `wt_${token}`, expires };
+}
+
+async function openToken(token: string, env: Env): Promise<Identity | null> {
+  if (!token.startsWith("wt_")) return null;
+  const claims = await open<{ actor: string; name: string; email?: string; org: string; expires: number }>(
+    "token", token.slice(3), env,
+  );
+  if (!claims || claims.expires < Date.now()) return null;
+  return { actor: claims.actor, name: claims.name, ...(claims.email ? { email: claims.email } : {}), org: claims.org };
 }
 
 function parseCookies(header: string): Record<string, string> {
@@ -259,5 +337,15 @@ async function workos(env: Env, path: string): Promise<unknown> {
     headers: { authorization: `Bearer ${env.WORKOS_API_KEY}` },
   });
   if (!response.ok) throw new Error(`WorkOS ${path}: ${response.status}`);
+  return response.json();
+}
+
+async function workosPost(env: Env, path: string, body: unknown): Promise<unknown> {
+  const response = await fetch(`${WORKOS}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.WORKOS_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`WorkOS POST ${path}: ${response.status}`);
   return response.json();
 }
