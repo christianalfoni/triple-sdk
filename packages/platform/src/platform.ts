@@ -11,7 +11,7 @@
  * open an app" is exactly "who can read its App row".
  */
 import type { TripleServer } from "triple-sdk/server";
-import type { AppSchema, EntityDef } from "triple-sdk/schema";
+import { subjectEntityName, type AppSchema, type EntityDef } from "triple-sdk/schema";
 import {
   Query,
   runQuery,
@@ -72,12 +72,25 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     if (outcome.kind === "reject") throw new Error(outcome.reason);
   }
 
-  const appByName = (actor: string, name: string) =>
-    queryAs(actor, Query.from(App).where("name", name).select({ name: true, live: { version: true } }))[0];
+  const appSelection = { name: true, audience: true, invited: true, live: { version: true } } as const;
 
-  /** No constraint: every app this member may see (§6.2). */
-  const apps = (actor: string) =>
-    queryAs(actor, Query.from(App).orderBy("name").select({ name: true, live: { version: true } }));
+  /** The app, IF this actor may open it — the App's read rule decides (see policy.ts). */
+  const appByName = (actor: string, name: string) =>
+    queryAs(actor, Query.from(App).where("name", name).select(appSelection))[0];
+
+  /** No constraint: every app this actor may open (§6.2). */
+  const apps = (actor: string) => queryAs(actor, Query.from(App).orderBy("name").select(appSelection));
+
+  /**
+   * The actor's own record — role and email as the cell holds them. Read the
+   * same way as everything else, so an actor with no row yet is just `{ id }`.
+   */
+  function actorRecord(actor: string): { id: string; role?: string; email?: string } {
+    const entity = (schema.entities as Record<string, EntityDef>)[subjectEntityName(actor)];
+    if (!entity) return { id: actor };
+    const [row] = queryAs(actor, Query.from(entity).whereId(actor).select({ role: true, email: true } as never));
+    return (row ?? { id: actor }) as { id: string; role?: string; email?: string };
+  }
 
   const drafts = (actor: string, app: { id: string }) =>
     queryAs(
@@ -104,9 +117,40 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     const existing = appByName(actor, appName);
     const current = existing ? draft(actor, existing, path) : undefined;
     transactAs(actor, (tx) => {
-      const appId = existing?.id ?? tx.create(App, { name: appName }).id;
+      // A new app starts members-only; widening its audience is a separate, deliberate step.
+      const appId = existing?.id ?? tx.create(App, { name: appName, audience: "members" }).id;
       if (current) tx.edit(DraftFile, current.id).content = content;
       else tx.create(DraftFile, { app: { id: appId }, path, content });
+    });
+  }
+
+  /** Who may open the app: "members" (default), "invited" (+ listed guests), "public" (anyone). */
+  function setAudience(actor: string, appName: string, audience: "members" | "invited" | "public"): void {
+    const app = appByName(actor, appName);
+    if (!app) throw new Error(`no app "${appName}"`);
+    transactAs(actor, (tx) => {
+      tx.edit(App, app.id).audience = audience;
+    });
+  }
+
+  /** Admit one guest, by email — matched against the email the identity provider verified. */
+  function inviteToApp(actor: string, appName: string, email: string): { invited: readonly string[] } {
+    const app = appByName(actor, appName);
+    if (!app) throw new Error(`no app "${appName}"`);
+    if (!app.invited.includes(email)) {
+      transactAs(actor, (tx) => {
+        tx.edit(App, app.id).invited.push(email);
+      });
+    }
+    return { invited: [...app.invited, ...(app.invited.includes(email) ? [] : [email])] };
+  }
+
+  /** Take the app off its live URL. Releases stay — history is permanent; publish again to restore. */
+  function unpublish(actor: string, appName: string): void {
+    const app = appByName(actor, appName);
+    if (!app) throw new Error(`no app "${appName}"`);
+    transactAs(actor, (tx) => {
+      tx.edit(App, app.id).live = undefined;
     });
   }
 
@@ -185,6 +229,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     entities,
     queryAs,
     transactAs,
+    actorRecord,
     apps,
     appByName,
     drafts,
@@ -192,6 +237,9 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     writeDraft,
     deleteDraft,
     publish,
+    unpublish,
+    setAudience,
+    inviteToApp,
     serve,
   };
 }

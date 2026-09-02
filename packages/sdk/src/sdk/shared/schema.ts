@@ -16,7 +16,7 @@
  *   const schema = Schema.build({ user: User, team: Team, todo: Todo });
  *
  * `from` defines ONE unit, `build` assembles them — the same pairing the policy
- * side uses (`Policy.from` / `Policy.build`, §10). `Schema.build` STAMPS each
+ * side uses (`Policy.from` / `Policy.build` under `definePolicy`, §10). `Schema.build` STAMPS each
  * entity with its key (a hidden symbol property), which is how `Query.from(Todo)`
  * and `tx.edit(Todo, …)` know the predicate namespace without being handed the
  * registry — see `entityName`.
@@ -43,6 +43,8 @@ export type ObjectMemberField = {
   type: Exclude<FieldType, "ref"> | readonly Exclude<FieldType, "ref">[];
   optional: boolean;
   shape?: Record<string, ObjectMemberField>;
+  /** `Schema.oneOf` members: the only strings allowed. */
+  values?: readonly string[];
 };
 
 /**
@@ -55,6 +57,13 @@ export type Field = {
 
   /** §4.7 — present exactly when `type` is "object": the members' shape. */
   shape?: Record<string, ObjectMemberField>;
+
+  /**
+   * §4.8 — a `Schema.oneOf("admin", "member")` field: a string whose only
+   * legal values are these. Runtime data, like `shape`: writes validate against
+   * it and the schema hash sees it, so adding a value is a generation change.
+   */
+  values?: readonly string[];
 
   /**
    * Can this (subject, predicate) pair hold more than one value?
@@ -99,6 +108,7 @@ export class FieldBuilder<
   M extends boolean,
   O extends boolean,
   R = never,
+  L = unknown,
 > {
   /**
    * Type-level anchor for T, which `field.type` no longer carries exactly (a union
@@ -106,6 +116,8 @@ export class FieldBuilder<
    * would be phantom, and conditional types could not tell builders apart.
    */
   declare readonly valueKind?: T;
+  /** §4.8 — anchor for L, the literal union of a `Schema.oneOf`; `unknown` = no narrowing. */
+  declare readonly literal?: L;
 
   constructor(
     readonly field: {
@@ -114,6 +126,8 @@ export class FieldBuilder<
       optional: O;
       /** §4.7 — object fields carry their members' shape. */
       shape?: Record<string, ObjectMemberField>;
+      /** §4.8 — oneOf fields carry their allowed values. */
+      values?: readonly string[];
     },
     /** The ref's target — possibly a THUNK for mutual references (§4.4). Read
      * through `refTarget`, never directly. */
@@ -121,7 +135,7 @@ export class FieldBuilder<
   ) {}
 
   /** This field may hold many values. Writes append instead of replacing. */
-  multiple(): FieldBuilder<T, true, O, R> {
+  multiple(): FieldBuilder<T, true, O, R, L> {
     return new FieldBuilder({ ...this.field, multiple: true }, this.target);
   }
 
@@ -130,7 +144,7 @@ export class FieldBuilder<
    * enforcing its presence (§4.5). Meaningless on `.multiple()` fields — an empty
    * array already expresses absence.
    */
-  optional(): FieldBuilder<T, M, true, R> {
+  optional(): FieldBuilder<T, M, true, R, L> {
     return new FieldBuilder({ ...this.field, optional: true }, this.target);
   }
 }
@@ -262,6 +276,22 @@ export const Schema = {
     }),
 
   /**
+   * §4.8 — a string that may only be one of these values:
+   * `Schema.oneOf("admin", "member", "guest")` types as the literal union and
+   * REJECTS anything else on write, both sides. The values are shape (they feed
+   * the schema hash), so adding one is a generation change — which is what you
+   * want when readers switch on the value.
+   */
+  oneOf<const V extends readonly [string, ...string[]]>(
+    ...values: V
+  ): FieldBuilder<"string", false, false, never, V[number]> {
+    if (new Set(values).size !== values.length) {
+      throw new Error(`Schema.oneOf: values must be distinct (${values.join(", ")}).`);
+    }
+    return new FieldBuilder({ type: "string", multiple: false, optional: false, values });
+  },
+
+  /**
    * §4.7 — a structured value WITHOUT identity: stored as ONE triple, replaced
    * whole on every change (which is exactly right when members change together —
    * `{ x, y }` can never tear under per-field merge). Members use the same
@@ -288,6 +318,7 @@ export const Schema = {
         type: type as ObjectMemberField["type"],
         optional: builder.field.optional,
         ...(builder.field.shape !== undefined ? { shape: builder.field.shape } : {}),
+        ...(builder.field.values !== undefined ? { values: builder.field.values } : {}),
       };
     }
     return new FieldBuilder(
@@ -362,16 +393,22 @@ export function subjectEntityName(subject: Id): string {
  * members present, no unknown members, each member typed.
  */
 export function validateValue(
-  field: { type: FieldType | readonly FieldType[]; shape?: Record<string, ObjectMemberField> },
+  field: {
+    type: FieldType | readonly FieldType[];
+    shape?: Record<string, ObjectMemberField>;
+    values?: readonly string[];
+  },
   value: Value,
   where: string,
 ): void {
   const types = Array.isArray(field.type) ? field.type : [field.type];
   for (const type of types) {
-    if (matchesType(type as FieldType, value, field.shape)) return;
+    if (matchesType(type as FieldType, value, field.shape, field.values)) return;
   }
   throw new Error(
-    `${where}: ${JSON.stringify(value)} is not a ${types.join(" | ")}.`,
+    `${where}: ${JSON.stringify(value)} is not a ${
+      field.values ? `one of ${field.values.map((v) => JSON.stringify(v)).join(" | ")}` : types.join(" | ")
+    }.`,
   );
 }
 
@@ -379,10 +416,11 @@ function matchesType(
   type: FieldType,
   value: Value,
   shape: Record<string, ObjectMemberField> | undefined,
+  values?: readonly string[],
 ): boolean {
   switch (type) {
     case "string":
-      return typeof value === "string";
+      return typeof value === "string" && (values === undefined || values.includes(value));
     case "number":
       return typeof value === "number" && Number.isFinite(value);
     case "boolean":
@@ -406,7 +444,9 @@ function matchesType(
           continue;
         }
         const memberTypes = Array.isArray(memberField.type) ? memberField.type : [memberField.type];
-        if (!memberTypes.some((t) => matchesType(t as FieldType, held, memberField.shape))) return false;
+        if (!memberTypes.some((t) => matchesType(t as FieldType, held, memberField.shape, memberField.values))) {
+          return false;
+        }
       }
       return true;
     }
@@ -441,6 +481,7 @@ export function schemaHash(entities: Entities): string {
           multiple: builder.field.multiple,
           optional: builder.field.optional,
           shape: builder.field.shape ?? null,
+          values: builder.field.values ?? null,
           // Ref targets are named too — stamped by the AppSchema constructor
           // before this runs. An unregistered target throws a naming error here,
           // which is the eager failure we want.

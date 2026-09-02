@@ -9,18 +9,25 @@
  */
 import { HttpTransport, TripleClient } from "triple-sdk/client";
 import { Query } from "triple-sdk/query";
-import { App, schema, Todo } from "app-schema";
+import { App, schema, Todo, User } from "app-schema";
 
 const base = process.env.SMOKE_URL ?? "http://localhost:8787";
 const org = `org_smoke_${Math.floor(Math.random() * 1e6)}`;
 
-function member(actor: string, name: string): TripleClient {
+/** Dev-mode identity is headers: actor, name, and the role the edge would derive from WorkOS. */
+function identity(actor: string, name: string, role = "member", email?: string): Record<string, string> {
+  return {
+    "x-actor": actor,
+    "x-actor-name": name,
+    "x-actor-role": role,
+    ...(email ? { "x-actor-email": email } : {}),
+  };
+}
+
+function member(actor: string, name: string, role = "member", email?: string): TripleClient {
   const client = new TripleClient({
     schema,
-    transport: new HttpTransport(`${base}/w/${org}/api`, {
-      "x-actor": actor,
-      "x-actor-name": name,
-    }),
+    transport: new HttpTransport(`${base}/w/${org}/api`, identity(actor, name, role, email)),
   });
   client.connect();
   return client;
@@ -102,20 +109,23 @@ log("still hers", `alice keeps both todos; shared flags: ${JSON.stringify(aliceA
 // -- THE PLATFORM: apps are data. An agent writes a draft over MCP, members see
 //    nothing until publish, and a running app learns about a new version LIVE —
 //    the registry row is just another entity under just another policy.
-const mcp = async (actor: string, name: string, tool: string, args: object): Promise<string> => {
+const mcpCall = async (
+  who: Record<string, string>,
+  tool: string,
+  args: object,
+): Promise<{ text: string; isError: boolean }> => {
   const response = await fetch(`${base}/w/${org}/mcp`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      "x-actor": actor,
-      "x-actor-name": name,
-    },
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...who },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
   });
   const { result } = (await response.json()) as { result: { content: { text: string }[]; isError?: boolean } };
-  if (result.isError) fail(`mcp ${tool}: ${result.content[0]!.text}`);
-  return result.content[0]!.text;
+  return { text: result.content[0]!.text, isError: result.isError === true };
+};
+const mcp = async (actor: string, name: string, tool: string, args: object, role = "member"): Promise<string> => {
+  const outcome = await mcpCall(identity(actor, name, role), tool, args);
+  if (outcome.isError) fail(`mcp ${tool}: ${outcome.text}`);
+  return outcome.text;
 };
 const appUrl = `${base}/w/${org}/apps/hello`;
 const get = async (path: string) => {
@@ -148,6 +158,50 @@ if (registry.data[0]?.live?.version !== 2) {
   fail(`bob's registry query did not see version 2: ${JSON.stringify(registry.data)}`);
 }
 log("live version", "a draft edit leaves live alone · publish 2 → bob's running query sees live.version 2");
+
+// -- WHO IS WHO: the edge mirrors the caller's standing into their User row and
+//    the cell's rules read it (`ctx.actor.role`). A guest is signed in but not a
+//    member; anonymous is not signed in. Both reach the same /api, same policy.
+const guest = identity("user_guest", "Guest", "guest", "guest@example.com");
+const anonymous = { "x-actor": "anonymous" };
+const open = async (path: string, who: Record<string, string>) => (await fetch(`${appUrl}${path}`, { headers: who })).status;
+
+if ((await open("/", guest)) !== 404) fail("a guest opened a members-only app");
+if ((await open("/", anonymous)) !== 404) fail("anonymous opened a members-only app");
+await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "invited" });
+await mcp("user_alice", "Alice", "invite_to_app", { app: "hello", email: "guest@example.com" });
+if ((await open("/", guest)) !== 200) fail("an invited guest could not open the app");
+if ((await open("/draft/", guest)) !== 404) fail("a guest saw the draft");
+if ((await open("/", anonymous)) !== 404) fail("anonymous opened an invited app");
+await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "public" });
+if ((await open("/", anonymous)) !== 200) fail("anonymous could not open a public app");
+log("audiences", "members-only 404s guests · invited admits the listed guest, never anonymous · public admits anonymous · drafts stay members-only");
+
+// -- a guest's data world is their own rows. The board is for members.
+await alice.transact((tx) => {
+  tx.edit(Todo, sharedId).shared = true;
+});
+const guestClient = member("user_guest", "Guest", "guest", "guest@example.com");
+const guestTodos = guestClient.watch(Query.from(Todo).select({ text: true }));
+await guestTodos.ready;
+const boardDeadline = Date.now() + 3000;
+while (bobBoard.data.length !== 1 && Date.now() < boardDeadline) await settle();
+if (bobBoard.data.length !== 1) fail("bob did not see the re-shared todo");
+if (guestTodos.data.length !== 0) fail(`a guest saw ${guestTodos.data.length} member todos`);
+const promoted = await guestClient
+  .transact((tx) => {
+    tx.edit(User, "user_guest").role = "admin";
+  })
+  .then(() => "ALLOWED", (error: Error) => error.message);
+if (promoted === "ALLOWED") fail("a guest promoted themselves");
+log("guest data", `bob sees the re-shared todo, the guest sees none of it · self-promotion: "${promoted}"`);
+
+// -- inviting INTO the workspace is the identity provider's job, and admin-only.
+const refused = await mcpCall(identity("user_bob", "Bob"), "invite_member", { email: "carol@example.com" });
+if (!refused.text.includes("admin")) fail(`a member invited someone: ${refused.text}`);
+const invited = await mcp("user_alice", "Alice", "invite_member", { email: "carol@example.com", role: "member" }, "admin");
+if (!invited.includes("carol@example.com")) fail(`the admin's invite failed: ${invited}`);
+log("invite member", `bob (member) is refused · alice (admin): ${invited}`);
 
 console.log("service smoke: all green");
 process.exit(0);

@@ -17,6 +17,22 @@
  */
 import { Schema, type AppSchema, type EntityDef, type FieldBuilder } from "triple-sdk/schema";
 
+/**
+ * What the platform needs of the workspace's USER entity — spread these in:
+ * `Schema.from({ name: Schema.string(), ...platformUserFields })`.
+ *
+ * `role` is the actor's standing in the workspace, MIRRORED from the identity
+ * provider at the edge boundary and never written by a client (the workspace
+ * policy must forbid it): `admin` and `member` are organization members,
+ * `guest` is anyone signed in who is not — an app's user. `email` is how an
+ * invite finds its person before they have ever signed in.
+ */
+export const platformUserFields = {
+  role: Schema.oneOf("admin", "member", "guest"),
+  email: Schema.string().optional(),
+};
+export type PlatformUserFields = typeof platformUserFields;
+
 // Type aliases break the App ↔ Release TYPE cycle; the thunk in `live` breaks
 // the VALUE cycle (§4.4). Aliases, not interfaces — only aliases carry the
 // implicit index signature EntityDef requires.
@@ -25,6 +41,14 @@ export type AppFields<U extends EntityDef> = {
   name: FieldBuilder<"string", false, false>;
   /** What members see. Absent until the first publish; repointing it IS rollback. */
   live: FieldBuilder<"ref", false, true, ReleaseFields<U>>;
+  /**
+   * Who may OPEN the app. Members always may. `invited`: also guests whose
+   * email is in `invited`. `public`: anyone, signed in or not. The App's read
+   * rule is the access control — serving resolves the app through it.
+   */
+  audience: FieldBuilder<"string", false, false, never, "members" | "invited" | "public">;
+  /** Emails of the guests admitted when `audience` is "invited". */
+  invited: FieldBuilder<"string", true, false>;
 };
 
 export type ReleaseFields<U extends EntityDef> = {
@@ -37,10 +61,12 @@ export type ReleaseFields<U extends EntityDef> = {
   publishedAt: FieldBuilder<"number", false, false>;
 };
 
-export function platformEntities<U extends EntityDef>(User: U) {
+export function platformEntities<U extends EntityDef & PlatformUserFields>(User: U) {
   const App: AppFields<U> = Schema.from({
     name: Schema.string(),
     live: Schema.ref((): ReleaseFields<U> => Release).optional(),
+    audience: Schema.oneOf("members", "invited", "public"),
+    invited: Schema.string().multiple(),
   });
 
   const Release: ReleaseFields<U> = Schema.from({
@@ -68,7 +94,8 @@ export function platformEntities<U extends EntityDef>(User: U) {
   return { app: App, draftFile: DraftFile, release: Release, releaseFile: ReleaseFile };
 }
 
-export type PlatformEntities<U extends EntityDef = EntityDef> = ReturnType<typeof platformEntities<U>>;
+export type PlatformEntities<U extends EntityDef & PlatformUserFields = EntityDef & PlatformUserFields> =
+  ReturnType<typeof platformEntities<U>>;
 
 /** Find the platform's entities in a built workspace schema, by their fixed registry keys. */
 export function platformEntitiesOf(schema: AppSchema): PlatformEntities {

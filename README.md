@@ -103,8 +103,10 @@ carry their entity as a prefix (`todo_…`), which is how a bare id resolves to 
 shape.
 
 **How it is evaluated:** every write, on both sides, runs `validateValue(field,
-value)` — type, cardinality, and for `Schema.object()` the full shape (§4.7) —
-the client for an early error, the server authoritatively. Values enter the
+value)` — type, cardinality, for `Schema.object()` the full shape (§4.7), and
+for `Schema.oneOf("admin", "member", "guest")` membership in the declared
+values (§4.8; the field types as that literal union) — the client for an early
+error, the server authoritatively. Values enter the
 store in an **order-preserving encoding** — `s:Decide…`, `n:…`, `b:true`,
 `r:user_ada`, `o:{…}` — so lexicographic order *is* value order, which is what
 lets a range become an index read (§6).
@@ -247,23 +249,26 @@ never a leak: it cannot surface through a count, a join, or a window (§10.5).
 
 ### 5. Policy — the read filter and the write check
 
-Server-only, one block per entity, one rule per verb, lambdas only. `fields`
-declares what the rules get to **see** — a selection, like a query's, and the
-engine's leverage: it is loaded once per subject, batched across subjects,
-cached across actors, and it makes the **visibility dependency graph static**
-(§11).
+Server-only, one block per entity, one rule per verb, lambdas only. Two things
+are declared as data: `fields`, what the rules get to **see of the subject** —
+a selection, like a query's — and, once per workspace, the **actor entity**:
+rules run *as* a User, and `ctx.actor` is that user's own row. Both are the
+engine's leverage: loaded once per subject or actor, batched, cached across a
+fan-out, and `fields` makes the **visibility dependency graph static** (§11).
 
 ```ts
+const Policy = definePolicy({ actor: User });   // ctx.actor: { id, name, role, … } — the User row
+
 export const todoPolicy = Policy.from(Todo, {
   fields: { owner: true, team: { member: true } },
-  read:   (ctx) => ctx.fields.owner?.id === ctx.actor ||
-                   ctx.fields.team?.member.some((m) => m.id === ctx.actor),
-  create: (ctx) => ctx.fields.owner?.id === ctx.actor,   // fields = the state once it lands
-  update: (ctx) => ctx.fields.owner?.id === ctx.actor,   // fields = as it is now; ctx.after = as it will be
-  delete: (ctx) => ctx.fields.owner?.id === ctx.actor,
+  read:   (ctx) => ctx.fields.owner?.id === ctx.actor.id ||
+                   ctx.fields.team?.member.some((m) => m.id === ctx.actor.id),
+  create: (ctx) => ctx.fields.owner?.id === ctx.actor.id,   // fields = the state once it lands
+  update: (ctx) => ctx.fields.owner?.id === ctx.actor.id,   // fields = as it is now; ctx.after = as it will be
+  delete: (ctx) => ctx.fields.owner?.id === ctx.actor.id,
   overrides: {
     // team members may tick a todo they cannot otherwise write
-    completed: { write: (ctx) => ctx.fields.team?.member.some((m) => m.id === ctx.actor) },
+    completed: { write: (ctx) => ctx.fields.team?.member.some((m) => m.id === ctx.actor.id) },
   },
 });
 export const policy = Policy.build(schema, { user: userPolicy, team: teamPolicy, todo: todoPolicy });
@@ -273,9 +278,17 @@ export const policy = Policy.build(schema, { user: userPolicy, team: teamPolicy,
 over triples. For `[todo_3, todo/owner, →ada]` as Christian:
 
 ```
+actor          = { id: user_christian, name: "Christian" }               ← loaded once per actor
 fields(todo_3) = { owner: {id: user_ada}, team: { member: [{id: user_christian}, {id: user_ada}] } }
-read(ctx)      = false || true                                       → ✓
+read(ctx)      = false || true                                           → ✓
 ```
+
+Because `ctx.actor` is a row in the cell, "who is asking" is data: the service
+mirrors each caller's standing from the identity provider into `User.role`
+(`admin` · `member` · `guest`) and rules read it — `shared === true &&
+ctx.actor.role === "member"` — with no transport metadata in sight. An actor
+with no row yet (`system`, `anonymous`) is `{ id }` alone, so rules are written
+positively: undefined denies.
 
 **The write check** (`checkWrite`) groups a delta's triples **by subject** — the
 record, not the triple — derives the verb from existence (absent before, present
@@ -850,12 +863,12 @@ The API surface, in one table:
 
 |                           |                                                                    |                                                              |
 | ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Schema & entities**     | typed shape, shared by both sides; required by default             | `Schema.from` → `Schema.build`, `.optional()`, `.multiple()`, `Schema.object()`, `Schema.ref(() => …)` |
+| **Schema & entities**     | typed shape, shared by both sides; required by default             | `Schema.from` → `Schema.build`, `.optional()`, `.multiple()`, `Schema.object()`, `Schema.oneOf()`, `Schema.ref(() => …)` |
 | **Typed queries**         | find + shape in one, result types computed                         | `.where()` (values or sets), `.whereNot/Absent/Greater/Lesser/Between`, `.whereEither()`, `.whereId()`, subqueries |
 | **Ordered windows**       | pagination over a set: explicit order, keyset cursors, live refill | `.orderBy().limit().after(live.cursor)`                      |
 | **Live queries**          | the only read: data, status, per-query reactivity                  | `client.watch()`, `useQuery()`                               |
 | **Writes**                | drafts → intent; optimistic layer; outcome reported                | `client.transact((tx) => …)` → `"committed" \| "queued"`, `useTransaction()` |
-| **Permissions**           | entity verbs + declared fields, filtered inside the scan           | `Policy.from(Entity, rules)` → `Policy.build(schema, …)`     |
+| **Permissions**           | entity verbs + declared fields + the actor's own row, filtered inside the scan | `definePolicy({ actor })` → `Policy.from(Entity, rules)` → `Policy.build(schema, …)` |
 | **Realtime**              | SSE push, per-reader filtered; permission changes arrive as deltas | `client.connect()`                                           |
 | **Offline**               | cache + write queue survive reloads; drain in order when healed    | `persistence`, `onRejected()`                                |
 | **Presence**              | who's online — roster once, O(1) diffs; unlogged broadcasts        | `usePresence()`, `broadcast()`, `onEphemeral()`              |
@@ -979,7 +992,7 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 7 steps of privacy, override, rejection, live revocation
+pnpm service:smoke # 13 steps: privacy, override, live revocation, draft/publish, audiences, guests, invites
 ```
 
 ### The workspace as a platform

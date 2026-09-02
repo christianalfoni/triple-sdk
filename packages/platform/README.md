@@ -20,10 +20,13 @@ packages/platform/src/
 ## The model
 
 ```ts
-App          { name: string, live?: ref(Release) }                  // the registry row; `live` = what members see
+App          { name: string, live?: ref(Release),                    // the registry row; `live` = what viewers see
+               audience: "members" | "invited" | "public", invited: string[] }   // who may OPEN it
 DraftFile    { app: ref(App), path: string, content: string }       // the agent's workbench — write_file edits these
 Release      { app: ref(App), version: number, schemaGeneration: string, publishedBy: ref(User), publishedAt: number }
 ReleaseFile  { release: ref(Release), path: string, content: string }   // a frozen copy of one draft at publish time
+
+User         { …, role: "admin" | "member" | "guest", email?: string }  // platformUserFields — what the platform needs of yours
 ```
 
 **Publish is one transaction:** a `Release` (version = max + 1, stamped with
@@ -42,9 +45,34 @@ publishing again (or repointing `live`). One consequence: an app that has ever
 been published cannot be deleted — its releases reference it, and required refs
 may not dangle.
 
-**Rules, v1:** any workspace member may create apps, edit drafts, and publish.
-The edge has already proved membership; per-app ownership and audiences are
-more rules in the same vocabulary, not new machinery.
+## Who is who
+
+Rules run *as* a User: every rule sees `ctx.actor` — the caller's own row,
+with `role` and `email` — and the edge is what fills that row. A person's
+standing in a workspace comes from the identity provider (WorkOS: one
+organization = one workspace; a membership carries a role):
+
+| actor | who | may |
+|---|---|---|
+| `admin`, `member` | organization members | develop: every app's drafts, publish, unpublish, audiences, invites. Admins also invite members |
+| `guest` | signed in, **not** a member — an app's user | open apps whose `audience` admits them, and see only what the workspace's rules grant a guest (typically: what they own). Never drafts |
+| `anonymous` | not signed in | open `public` apps. Nothing else — their actor record is `{ id }`, and every rule denies it |
+
+`audience` is per app: `members` (the default on first `write_file`), `invited`
+(also the guests whose email is listed in `invited` — matched against the email
+the identity provider verified, so an invite can precede the person's first
+sign-in), `public`. "May open the app" **is** the App's read rule; releases and
+their files inherit it by traversing to their app, so a guest who may open an
+app may read exactly the files its live release serves. Members always see
+everything.
+
+Two things follow that are worth stating plainly. `User.role` is written by the
+cell from the edge's verified headers and **must be client-unwritable** in the
+workspace policy (an override that never grants), or a guest could promote
+themselves. And admitting guests means every rule in the workspace was written
+with them in mind: a rule that says `shared === true` without also saying
+`role === "member"` hands guests the board. The service's rules are the worked
+example; the smoke proves a guest sees none of it.
 
 Because they are entities, apps are queryable like anything else — a launcher
 app lists apps with `Query.from(App)`, an editor app watches drafts change
@@ -126,6 +154,10 @@ Every tool runs **as the member** who called it.
 | `write_file` | `app`, `path`, `content` | `{ draft: "…/apps/<app>/draft/", note }` — creates the app on first write; live is unchanged |
 | `delete_file` | `app`, `path` | `{ deleted: boolean }` |
 | `publish` | `app` | `{ version, url: "…/apps/<app>/" }` |
+| `unpublish` | `app` | `{ live: null }` — the live URL 404s until the next publish; releases stay |
+| `set_audience` | `app`, `audience` | `members` · `invited` · `public` — who may open it |
+| `invite_to_app` | `app`, `email` | adds a guest email to `invited` (the audience must be `invited`) |
+| `invite_member` | `email`, `role?` | admins only — an organization invitation from the identity provider (`inviteMember` in the wiring) |
 | `query` | `entity`, `where?`, `select?` | permission-filtered rows — the same rows an app would see |
 
 `query` speaks the schema's vocabulary, not the wire format: `where` is
@@ -162,26 +194,33 @@ A session, end to end:
 ## Wiring it into a cell
 
 ```ts
-// the shared shape — spread the platform's entities into the workspace schema
-import { platformEntities } from "workspace-platform/schema";
+// the shared shape — the user entity carries the platform's fields; spread the entities in
+import { platformEntities, platformUserFields } from "workspace-platform/schema";
+export const User = Schema.from({ name: Schema.string(), ...platformUserFields });
 export const platform = platformEntities(User);
 export const schema = Schema.build({ user: User, todo: Todo, ...platform });
 
-// the server — spread the platform's rules into the policy
+// the server — rules run as a User; spread the platform's rules into the policy
 import { platformPolicies } from "workspace-platform/policy";
-export const policy = Policy.build(schema, { user: userPolicy, todo: todoPolicy, ...platformPolicies(platform) });
+const Policy = definePolicy({ actor: User });
+export const policy = Policy.build(schema, { user: userPolicy, todo: todoPolicy, ...platformPolicies(User, platform) });
 
-// the cell — three doors, one TripleServer
+// the cell — three doors, one TripleServer; mirror the caller's role into their User row first
 import { createPlatform, handleMcp, serveApp } from "workspace-platform";
 const platform = createPlatform({ server, schema });
-if (path === "/mcp")             return handleMcp(request, { platform, actor, appBase: "/w/<ws>/apps", accessRules });
+if (path === "/mcp")             return handleMcp(request, { platform, actor, appBase, accessRules, inviteMember });
 if (path.startsWith("/apps/"))   return serveApp(platform, actor, path.slice("/apps".length));
 ```
 
 `accessRules` is the workspace's policy in prose, handed to `get_schema` —
-policies are lambdas and cannot describe themselves. The edge gates `/mcp` and
-`/apps/*` exactly as it gates `/api`: identify, check membership, strip and
-rewrite the actor headers, forward to the workspace's cell.
+policies are lambdas and cannot describe themselves. The edge decides who
+reaches the cell and as whom: it identifies the caller, asks the identity
+provider for their role in *this* organization, strips every client-supplied
+actor header and sets the verified ones (`x-actor`, `-name`, `-email`,
+`-role`) — `guest` for a signed-in non-member, `anonymous` for nobody — and
+forwards `/api/*` and `/apps/*` for all of them. `/mcp` is members only. The
+cell writes name, email and role into the caller's User row on every request
+(one lookup when unchanged), which is what the rules read.
 
 ## Trade-offs and known gaps
 
@@ -195,9 +234,19 @@ rewrite the actor headers, forward to the workspace's cell.
   model today is "an app is as trusted as the members who can see it"; the
   real fix is per-app subdomains, and it is the unglamorous hard part of
   letting agents deploy code your colleagues run.
-- **No per-app owner or audience yet.** Any member can publish any app or
-  flip its files. The rules are one file (`policy.ts`); an `audience` field
-  and a `createdBy` ref are the obvious next step.
+- **No per-app owner yet.** Any member can publish any app, change its
+  audience, or invite guests to it. A `createdBy` ref plus an override that
+  reserves audience changes for the creator is the next rule to write — in
+  the same file, in the same vocabulary.
+- **Guests share the workspace's `/api`.** Their isolation is the workspace
+  policy's job, rule by rule; the platform cannot tell a rule forgot them.
+  Scoping a guest's data to the app they came through (a `Todo.app` ref, say)
+  is the app builder's schema — the case for the per-workspace declarative
+  schema.
+- **A role change does not repair a live cache.** `ctx.actor.role` is read
+  fresh on every query and fan-out, but a guest promoted to member keeps their
+  guest-sized cache until they reconnect; the visibility machinery (§10.6)
+  does not yet treat writes to the actor's own row as affecting everything.
 - **Limits.** A Durable Object row is capped at 2 MB, and a publish is one log
   row containing every file's content — so one publish must stay under ~2 MB.
   If that ever bites, create the `ReleaseFile`s across several transactions and
@@ -214,7 +263,7 @@ rewrite the actor headers, forward to the workspace's cell.
 pnpm app:build && pnpm --filter worker platform:build
 pnpm service:dev                     # DEV_AUTH=1 in packages/worker/.dev.vars — no WorkOS needed
 pnpm --filter worker seed            # a couple of todos in org_dev, as Alice
-pnpm service:smoke                   # 10 steps, the last three are this package's
+pnpm service:smoke                   # 13 steps, the last six are this package's
 ```
 
 Then point any MCP client at `http://localhost:8787/w/org_dev/mcp` — for

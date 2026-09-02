@@ -16,6 +16,9 @@ export type Env = {
 
 export type Identity = { actor: string; name: string; email?: string };
 
+/** An actor's standing in ONE workspace: organization roles, or `guest` for a signed-in non-member. */
+export type Role = "admin" | "member" | "guest";
+
 const WORKOS = "https://api.workos.com";
 
 // ---------------------------------------------------------------------------
@@ -24,8 +27,15 @@ const WORKOS = "https://api.workos.com";
 
 export async function identify(request: Request, env: Env): Promise<Identity | null> {
   if (env.DEV_AUTH === "1") {
+    // Dev: headers stand in for WorkOS. `x-actor: anonymous` simulates "not signed in".
     const actor = request.headers.get("x-actor") ?? "user_dev";
-    return { actor, name: request.headers.get("x-actor-name") ?? actor.replace(/^user_/, "") };
+    if (actor === "anonymous") return null;
+    const email = request.headers.get("x-actor-email");
+    return {
+      actor,
+      name: request.headers.get("x-actor-name") ?? actor.replace(/^user_/, ""),
+      ...(email ? { email } : {}),
+    };
   }
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
   const token = cookies["session"];
@@ -40,41 +50,78 @@ export async function identify(request: Request, env: Env): Promise<Identity | n
   };
 }
 
-/** The org ids this user belongs to — WorkOS is the workspace directory. */
+/** The organizations this user belongs to, with their role in each — WorkOS is the workspace directory. */
 export async function memberships(
   identity: Identity,
   env: Env,
-): Promise<{ id: string; name: string }[]> {
+): Promise<{ id: string; name: string; role: "admin" | "member" }[]> {
   if (env.DEV_AUTH === "1") {
-    return [{ id: "org_dev", name: "Dev Workspace" }];
+    return [{ id: "org_dev", name: "Dev Workspace", role: "member" }];
   }
   const response = await workos(
     env,
     `/user_management/organization_memberships?user_id=${identity.actor}&statuses=active`,
   );
-  const list = (response as { data: { organization_id: string; organization_name?: string }[] }).data;
-  const out: { id: string; name: string }[] = [];
+  const list = (
+    response as { data: { organization_id: string; organization_name?: string; role?: { slug?: string } }[] }
+  ).data;
+  const out: { id: string; name: string; role: "admin" | "member" }[] = [];
   for (const entry of list) {
     out.push({
       id: entry.organization_id,
       name:
         entry.organization_name ??
         ((await workos(env, `/organizations/${entry.organization_id}`)) as { name: string }).name,
+      role: entry.role?.slug === "admin" ? "admin" : "member",
     });
   }
   return out;
 }
 
-export async function isMember(identity: Identity, org: string, env: Env): Promise<boolean> {
-  if (env.DEV_AUTH === "1") return true;
+/**
+ * The actor's standing in this workspace. Members carry their organization
+ * role; anyone else signed in is a `guest` — the cell's policy decides what a
+ * guest may open and see. Dev: `x-actor-role` (admin | member | guest),
+ * default member.
+ */
+export async function roleIn(request: Request, identity: Identity, org: string, env: Env): Promise<Role> {
+  if (env.DEV_AUTH === "1") {
+    const claimed = request.headers.get("x-actor-role");
+    return claimed === "admin" || claimed === "guest" ? claimed : "member";
+  }
   const cached = membershipCache.get(identity.actor);
-  if (cached && cached.at > Date.now() - 60_000) return cached.orgs.has(org);
-  const orgs = new Set((await memberships(identity, env)).map((m) => m.id));
-  membershipCache.set(identity.actor, { orgs, at: Date.now() });
-  return orgs.has(org);
+  const roles =
+    cached && cached.at > Date.now() - 60_000
+      ? cached.roles
+      : new Map((await memberships(identity, env)).map((m) => [m.id, m.role]));
+  membershipCache.set(identity.actor, { roles, at: Date.now() });
+  return roles.get(org) ?? "guest";
 }
 
-const membershipCache = new Map<string, { orgs: Set<string>; at: number }>();
+const membershipCache = new Map<string, { roles: Map<string, "admin" | "member">; at: number }>();
+
+/**
+ * Invite someone into a workspace as a member — a WorkOS organization
+ * invitation (they get the email; acceptance creates the membership the edge
+ * gates on). Dev: recorded in the log line only, no email leaves.
+ */
+export async function inviteMember(
+  env: Env,
+  org: string,
+  email: string,
+  role: "admin" | "member",
+): Promise<string> {
+  if (env.DEV_AUTH === "1") {
+    return `dev: ${email} would be invited to ${org} as ${role} (no email sent without WorkOS keys)`;
+  }
+  const response = await fetch(`${WORKOS}/user_management/invitations`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.WORKOS_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ email, organization_id: org, role_slug: role }),
+  });
+  if (!response.ok) throw new Error(`WorkOS invitation failed: ${response.status}`);
+  return `invited ${email} to the workspace as ${role} — they will get an email`;
+}
 
 // ---------------------------------------------------------------------------
 // Login flow

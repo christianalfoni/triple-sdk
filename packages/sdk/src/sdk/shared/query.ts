@@ -64,12 +64,14 @@ export type ObjectValueOf<S> = {
     : never]?: ValueOfField<S[K]>;
 };
 
-/** The value type a field builder accepts and yields. */
+/** The value type a field builder accepts and yields — a `oneOf` yields its literal union (§4.8). */
 export type ValueOfField<B> =
-  B extends FieldBuilder<infer T, boolean, boolean, infer R>
-    ? T extends "object"
-      ? ObjectValueOf<R>
-      : ValueOfType<T>
+  B extends FieldBuilder<infer T, boolean, boolean, infer R, infer L>
+    ? unknown extends L
+      ? T extends "object"
+        ? ObjectValueOf<R>
+        : ValueOfType<T>
+      : L
     : never;
 
 /** Fields a window may order by: single-valued scalars (refs and lists cannot rank). */
@@ -146,11 +148,11 @@ type Presence<V, O, Strict> = Strict extends true
  * type and the value cannot disagree.
  */
 type FieldResult<B, Sel, Strict extends boolean> =
-  B extends FieldBuilder<infer T, infer M, infer O, infer R>
+  B extends FieldBuilder<FieldType, infer M, infer O, infer R>
     ? Sel extends boolean // `true` in the source; widened inside nested callbacks
       ? M extends true
-        ? ValueOfType<T>[]
-        : Presence<ValueOfType<T>, O, Strict>
+        ? ValueOfField<B>[]
+        : Presence<ValueOfField<B>, O, Strict>
       : R extends EntityDef
         ? Sel extends (row: Ref) => infer Nested // §6.8 — callback at ref depth
           ? M extends true

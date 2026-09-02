@@ -12,11 +12,12 @@
  * can list apps and an editor can watch drafts with an ordinary useQuery.
  */
 import { Schema } from "triple-sdk/schema";
-import { platformEntities } from "workspace-platform/schema";
+import { platformEntities, platformUserFields } from "workspace-platform/schema";
 
+/** A member of the workspace — `role` and `email` come from the identity provider (see platformUserFields). */
 export const User = Schema.from({
   name: Schema.string(),
-  email: Schema.string().optional(),
+  ...platformUserFields,
 });
 
 export const Todo = Schema.from({

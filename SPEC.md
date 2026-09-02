@@ -230,6 +230,19 @@ SCHEMA, never by a value's shape, which also let `delete`'s inbound-ref sweep
 become schema-driven: one POS lookup per ref predicate instead of the old
 full-store walk.
 
+### 4.8 `oneOf` — a string with a closed set of values
+
+```ts
+role: Schema.oneOf("admin", "member", "guest")   // types as "admin" | "member" | "guest"
+```
+
+A `oneOf` is a string field whose legal values are enumerated. The values are
+SHAPE: they feed the schema hash (adding one is a generation change, §7.3), and
+every write validates against them on both sides — the client for an early
+error, the server authoritatively. Readers switch on the literal union; the
+policy compares against it. Values must be distinct, and a `oneOf` may be
+`.optional()` or `.multiple()`, or sit inside a `Schema.object` shape.
+
 ### 4.4 Mutual references — the thunk form
 
 An entity must exist before it is referenced — unless the reference is a THUNK,
@@ -1107,6 +1120,18 @@ The physical split is the enforcement. If policy lived in the shared module, one
 careless import would ship it.
 
 ### 10.2 An entity policy declares its `fields` — a selection, at any depth
+
+Rules are defined under a vocabulary bound ONCE to the actor entity —
+`const Policy = definePolicy({ actor: User })` — and every rule receives
+`ctx.actor`, the actor's OWN record: their id (from the authenticated
+connection, §7.4) plus every field of the actor entity, loaded from the
+unfiltered store once per actor per evaluation and cached with `fields`. It is
+lenient like `fields`: an actor with no row ("system", "anonymous") is `{ id }`
+alone, so `ctx.actor.role` reads undefined — and undefined denies. Write rules
+positively (`role === "member"`), never by exclusion. This is what makes "who is
+asking" data in the cell — a role mirrored from the identity provider — rather
+than transport metadata: it can be queried, migrated, and audited like any
+other fact.
 
 A field comparison is a traversal of depth 1, so both are declared the same way: the
 policy's `fields` is a **selection**, the same bare-keyed form as a query's

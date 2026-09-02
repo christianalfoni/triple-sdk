@@ -75,3 +75,18 @@ Schema.object({ owner: Schema.ref(User) });
 
 // @ts-expect-error — no .multiple() inside a value: there are no triples in there
 Schema.object({ tags: Schema.string().multiple() });
+
+// §4.8 — Schema.oneOf: the literal union on the draft, on create, and in results.
+const Member = Schema.from({ name: Schema.string(), role: Schema.oneOf("admin", "member", "guest") });
+export const memberSchema = Schema.build({ member: Member });
+{
+  const tx = new Transaction(memberSchema.flat, new Store());
+  const draft = tx.create(Member, { name: "Ada", role: "admin" });
+  draft.role = "guest";
+  // @ts-expect-error — "owner" is not one of the declared values
+  draft.role = "owner";
+  // @ts-expect-error — nor is any other string
+  tx.create(Member, { name: "Bob", role: "" as string });
+  const literal: "admin" | "member" | "guest" = draft.role;
+  void literal;
+}

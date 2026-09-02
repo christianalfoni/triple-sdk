@@ -23,6 +23,12 @@ export type McpOptions = {
   appBase: string;
   /** The workspace's access rules in prose — policies are lambdas and cannot describe themselves. */
   accessRules: string;
+  /**
+   * Invite someone INTO the workspace, as a member — the identity provider's
+   * job (an organization invitation), so the host supplies it. Returns a
+   * human-readable outcome. Admin-only; the endpoint checks the caller's role.
+   */
+  inviteMember?: (email: string, role: "admin" | "member") => Promise<string>;
 };
 
 const TOOLS = [
@@ -80,6 +86,41 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
   },
   {
+    name: "unpublish",
+    description: "Take the app off its live URL (404 until the next publish). Releases stay — history is permanent.",
+    inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
+  },
+  {
+    name: "set_audience",
+    description:
+      "Who may OPEN the app. members (default): workspace members only. invited: also guests — signed-in people who are " +
+      "not members — whose email was added with invite_to_app. public: anyone, signed in or not. Guests and anonymous " +
+      "viewers reach the same /api under the same policy, so they only ever see data the rules grant them.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string" }, audience: { type: "string", enum: ["members", "invited", "public"] } },
+      required: ["app", "audience"],
+    },
+  },
+  {
+    name: "invite_to_app",
+    description: "Admit one guest to an app (audience must be invited), by the email their sign-in will carry.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string" }, email: { type: "string" } },
+      required: ["app", "email"],
+    },
+  },
+  {
+    name: "invite_member",
+    description: "Invite someone into the WORKSPACE as a member (admins only) — an organization invitation from the identity provider.",
+    inputSchema: {
+      type: "object",
+      properties: { email: { type: "string" }, role: { type: "string", enum: ["admin", "member"] } },
+      required: ["email"],
+    },
+  },
+  {
     name: "query",
     description:
       "Query live workspace data AS YOU — the same permission-filtered rows an app would see. " +
@@ -105,7 +146,7 @@ const TOOLS = [
 ];
 
 export async function handleMcp(request: Request, options: McpOptions): Promise<Response> {
-  const { platform, actor, appBase, accessRules } = options;
+  const { platform, actor, appBase, accessRules, inviteMember } = options;
   if (request.method !== "POST") return new Response("MCP speaks POST", { status: 405 });
   const rpc = (await request.json()) as Rpc;
 
@@ -149,7 +190,14 @@ export async function handleMcp(request: Request, options: McpOptions): Promise<
             return respond(text(describeWorkspace(platform, appBase, accessRules)));
           case "list_apps":
             return respond(
-              text(platform.apps(actor).map((app) => ({ name: app.name, live: app.live?.version ?? null }))),
+              text(
+                platform.apps(actor).map((app) => ({
+                  name: app.name,
+                  live: app.live?.version ?? null,
+                  audience: app.audience,
+                  ...(app.audience === "invited" ? { invited: app.invited } : {}),
+                })),
+              ),
             );
           case "list_files": {
             const app = platform.appByName(actor, args.app!);
@@ -178,6 +226,30 @@ export async function handleMcp(request: Request, options: McpOptions): Promise<
             if (problem) return respond(text(`error: ${problem}`));
             const { version } = platform.publish(actor, args.app!);
             return respond(text({ version, url: `${appBase}/${args.app}/` }));
+          }
+          case "unpublish":
+            platform.unpublish(actor, args.app!);
+            return respond(text({ live: null, url: `${appBase}/${args.app}/` }));
+          case "set_audience": {
+            const audience = args.audience as "members" | "invited" | "public";
+            if (!["members", "invited", "public"].includes(audience)) {
+              return respond(text("error: audience must be members, invited or public"));
+            }
+            platform.setAudience(actor, args.app!, audience);
+            return respond(text({ app: args.app, audience }));
+          }
+          case "invite_to_app": {
+            if (!/^[^\s@]+@[^\s@]+$/.test(args.email ?? "")) return respond(text("error: that is not an email"));
+            return respond(text(platform.inviteToApp(actor, args.app!, args.email!)));
+          }
+          case "invite_member": {
+            if (platform.actorRecord(actor).role !== "admin") {
+              return respond(text("error: only workspace admins invite members"));
+            }
+            if (!inviteMember) return respond(text("error: this workspace has no member directory configured"));
+            const role = (args.role as "admin" | "member" | undefined) ?? "member";
+            if (role !== "admin" && role !== "member") return respond(text("error: role must be admin or member"));
+            return respond(text(await inviteMember(args.email!, role)));
           }
           case "query":
             return respond(text(runQueryTool(platform, actor, args)));
@@ -242,11 +314,17 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "",
     "Access rules:",
     accessRules,
-    "Apps, drafts: any member reads and writes. Releases: immutable, never deleted.",
+    "",
+    "Who is who (ctx.actor.role in every rule, mirrored from the identity provider):",
+    "- admin, member: workspace members. They develop — every app's drafts, publish, audiences, invites.",
+    "- guest: signed in but not a member — an app's user. Opens apps whose audience admits them; sees only",
+    "  the data the rules grant a guest (typically: what they own). They never see drafts.",
+    "- anonymous: not signed in. Opens public apps only; /api/me is 401 for them.",
+    "Apps start members-only. set_audience widens them; invite_to_app lists guest emails; releases are immutable.",
     "",
     "Building apps:",
     `- write_file edits DRAFTS, served immediately at ${appBase}/<app>/draft/`,
-    `- publish snapshots the drafts as release N and serves it at ${appBase}/<app>/ — members see only releases`,
+    `- publish snapshots the drafts as release N and serves it at ${appBase}/<app>/ — viewers see only releases`,
     "- implicit index.html: Tailwind + import map + <div id=root> + ./app.js (write your own to override)",
     "- plain-JS ES modules; components: import { html, render } from 'htm/preact'",
     "- hooks: import { createHooks } from 'triple-sdk/react' (react maps to preact/compat)",

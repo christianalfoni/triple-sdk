@@ -15,14 +15,17 @@ import { DurableStorage } from "triple-sdk/server/durable";
 import { createFetchHandler } from "triple-sdk/server/fetch";
 import { createPlatform, handleMcp, serveApp, type Platform } from "workspace-platform";
 import { schema, User } from "app-schema";
+import { inviteMember, type Env } from "./auth.ts";
 import { accessRules, policy } from "./policy.ts";
 
 export class WorkspaceCell {
   readonly #server: TripleServer;
   readonly #platform: Platform;
   readonly #handle: (request: Request) => Promise<Response>;
+  readonly #env: Env;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: Env) {
+    this.#env = env;
     this.#server = new TripleServer({
       schema,
       policy,
@@ -38,16 +41,23 @@ export class WorkspaceCell {
 
   fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const org = /^\/w\/([\w-]+)/.exec(url.pathname)?.[1] ?? "org_dev";
     const workspacePath = url.pathname.replace(/^\/w\/[\w-]+/, "");
-    const actor = request.headers.get("x-actor") ?? "user_dev";
+    const actor = request.headers.get("x-actor") ?? "anonymous";
+
+    // Mirror the caller's identity — name, email, ROLE — into their User row on
+    // every request. One lookup when nothing changed; a commit when it did. This
+    // is what makes `ctx.actor.role` data the policy can read. Anonymous callers
+    // have no row: their actor record is `{ id }`, and every rule denies it.
+    this.#ensureUser(request);
 
     if (workspacePath === "/mcp") {
-      this.#ensureUser(request);
       return handleMcp(request, {
         platform: this.#platform,
         actor,
         appBase: url.pathname.replace(/\/mcp$/, "/apps"),
         accessRules,
+        inviteMember: (email, role) => inviteMember(this.#env, org, email, role),
       });
     }
 
@@ -59,23 +69,25 @@ export class WorkspaceCell {
       return Promise.resolve(serveApp(this.#platform, actor, workspacePath.slice("/apps".length)));
     }
 
-    // Mirror the member's profile into the workspace on every subscribe, so
-    // `owner: { name }` selections resolve without the app writing users.
-    if (workspacePath.endsWith("/subscribe")) this.#ensureUser(request);
     return this.#handle(request);
   }
 
   #ensureUser(request: Request): void {
     const actor = request.headers.get("x-actor");
     const name = request.headers.get("x-actor-name");
-    const email = request.headers.get("x-actor-email");
-    if (!actor || !name) return;
-    const current = this.#server.storage.match([actor, "user/name", undefined])[0]?.[2];
-    if (current === name) return;
+    const email = request.headers.get("x-actor-email") ?? undefined;
+    const claimed = request.headers.get("x-actor-role");
+    const role = claimed === "admin" || claimed === "member" || claimed === "guest" ? claimed : undefined;
+    if (!actor || actor === "anonymous" || !name || !role) return;
+    const held = (predicate: string) => this.#server.storage.match([actor, predicate, undefined])[0]?.[2];
+    if (held("user/name") === name && held("user/role") === role && held("user/email") === email) return;
+    // The cell's own commit path: write checks are bypassed here on purpose —
+    // `role` is exactly the field no client may write (policy.ts).
     const tx = this.#server.transaction();
     const draft = tx.edit(User, actor);
     draft.name = name;
-    if (email) draft.email = email;
+    draft.role = role;
+    draft.email = email;
     this.#server.commit(tx, actor);
   }
 }

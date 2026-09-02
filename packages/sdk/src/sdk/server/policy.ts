@@ -6,22 +6,29 @@
  * merely be untrusted, it would be wrong (SPEC §10.1). The shared schema module
  * carries shape; this module carries logic. That split is the trust boundary.
  *
+ *   const Policy = definePolicy({ actor: User });   // rules run AS a User (§10.2)
+ *
  *   export const todoPolicy = Policy.from(Todo, {
  *     fields: {
  *       owner: true,                 // depth 1 — field comparison
  *       team: { member: true },      // depth 2 — traversal along the ref
  *     },
- *     read:   (ctx) => ctx.fields.owner?.id === ctx.actor ||
- *                      ctx.fields.team?.member.some((m) => m.id === ctx.actor),
- *     create: (ctx) => ctx.fields.owner?.id === ctx.actor,  // fields = ONCE IT LANDS
- *     update: (ctx) => ctx.fields.owner?.id === ctx.actor,
- *     delete: (ctx) => ctx.fields.owner?.id === ctx.actor,
+ *     read:   (ctx) => ctx.fields.owner?.id === ctx.actor.id ||
+ *                      (ctx.fields.shared === true && ctx.actor.role === "member"),
+ *     create: (ctx) => ctx.fields.owner?.id === ctx.actor.id,  // fields = ONCE IT LANDS
+ *     update: (ctx) => ctx.fields.owner?.id === ctx.actor.id,
+ *     delete: (ctx) => ctx.fields.owner?.id === ctx.actor.id,
  *     overrides: { notes: { read: … } },            // per-field override (read only)
  *   })
  *
  *   const policy = Policy.build(schema, { user: userPolicy, team: teamPolicy, … })
  *   new TripleServer({ schema, policy })
  *   // coverage checked at build(): a missing entity's policy does not compile
+ *
+ * `ctx.actor` is the actor's OWN record — their id plus every field of the actor
+ * entity, loaded from the unfiltered store once per actor — so "who is asking"
+ * is data in the cell (a role mirrored from the identity provider, say), not
+ * transport metadata.
  *
  * Rules attach to the ENTITY — one read rule and three write verbs — because that is
  * the granularity policies actually have; per-field `overrides` cover
@@ -56,9 +63,23 @@ import type { Delta, Id, Readable, Triple, Value } from "../shared/types.ts";
 // Ctx — what a rule sees
 // -----------------------------------------------------------------------------
 
-export type ReadCtx<E extends EntityDef, C> = {
-  /** From the authenticated connection (SPEC §7.4), never from the message. */
-  actor: Id;
+/**
+ * §10.2 — the actor's own record: `id` (from the authenticated connection, §7.4,
+ * never from the message) plus every field of the actor entity declared in
+ * `definePolicy({ actor })`. Lenient like `fields`: an actor with no row yet
+ * ("system", "anonymous") is `{ id }` alone, so `ctx.actor.role` reads
+ * undefined — and undefined denies. Write rules POSITIVELY (`role === "member"`),
+ * never by exclusion (`role !== "guest"` would admit the unknown).
+ */
+export type ActorRecord<A extends EntityDef> = { id: Id } & EntityResult<
+  A,
+  { [K in keyof A]: true },
+  false
+>;
+
+export type ReadCtx<E extends EntityDef, C, A extends EntityDef = EntityDef> = {
+  /** Who is asking — their id and their own record (see ActorRecord). */
+  actor: ActorRecord<A>;
   subject: Id;
   /**
    * The policy's declared `fields`, materialized for this subject — same computed
@@ -89,7 +110,7 @@ export type ReadCtx<E extends EntityDef, C> = {
  * away, or moving it into a team you are not in); against the post-state alone,
  * anyone may SEIZE an entity by writing themselves in as owner.
  */
-export type UpdateCtx<E extends EntityDef, C> = ReadCtx<E, C> & {
+export type UpdateCtx<E extends EntityDef, C, A extends EntityDef = EntityDef> = ReadCtx<E, C, A> & {
   /** The same fields, materialized against the store once this delta lands
    * (any depth, via an overlay). */
   after: EntityResult<E, C, false>;
@@ -135,6 +156,8 @@ export type Policy = {
   /** The schema these rules were built FROM — the server verifies it got the same one. */
   app: AppSchema;
   schema: Schema;
+  /** §10.2 — the entity actors are instances of, and the (all-fields) selection that loads their record. */
+  actor: { entity: EntityDef; selection: RuntimeSelection };
   byEntity: Record<string, EntityPolicy>;
   /**
    * predicate → the ref paths that lead from a policy's root subject to the level
@@ -157,71 +180,87 @@ export type EntityPolicyFor<E extends EntityDef> = Omit<EntityPolicy, "entity"> 
   entity: E;
 };
 
-export const Policy = {
-  /**
-   * One standalone policy per entity — no registry in sight here:
-   *
-   *   export const todoPolicy = Policy.from(Todo, { fields, read, … })
-   *
-   * Mirrors the schema side deliberately: `X.from` defines one unit, `X.build`
-   * assembles them. Coverage is checked at `Policy.build(schema, { … })`, which
-   * requires a key per entity — a missing policy is a missing property, named.
-   * Fields inference happens here, one site per call, so a check reaching for a
-   * field it did not declare is a compile error (pinned in policy.type-test.ts).
-   */
-  from<E extends EntityDef, const C extends EntitySelection<E> = {}>(
-    entity: E,
-    definition: {
-      /** What the rules get to SEE — a selection, traversing refs (§10.2). */
-      fields?: C;
-      read: (ctx: ReadCtx<E, C>) => Verdict;
-      /** Sees the entity AS IT WILL LAND — a create has no pre-state (§10.4). */
-      create: (ctx: ReadCtx<E, C>) => Verdict;
-      /** Sees both states — the only verb that has two (§10.4). */
-      update: (ctx: UpdateCtx<E, C>) => Verdict;
-      /** Sees the entity as it is now — a delete has no post-state (§10.4). */
-      delete: (ctx: ReadCtx<E, C>) => Verdict;
-      /** Per-field overrides — the field rule WINS for that field's triples:
-       * `read` filters them, `write` replaces the entity's create/update rule
-       * when they change (delete stays entity-level). */
-      overrides?: {
-        [K in keyof E]?: {
-          read?: (ctx: ReadCtx<E, C>) => Verdict;
-          write?: (ctx: ReadCtx<E, C>) => Verdict;
+/**
+ * §10.2 — bind the rule vocabulary to the entity actors are instances of. Every
+ * `ctx.actor` in every rule is typed from it:
+ *
+ *   const Policy = definePolicy({ actor: User });
+ *   export const todoPolicy = Policy.from(Todo, { fields, read, … });
+ *   export const policy = Policy.build(schema, { user: userPolicy, todo: todoPolicy });
+ *
+ * Declared ONCE, because it is a fact about the workspace, not about any one
+ * entity's rules — which is also why it is a factory and not a parameter of
+ * `from`: the types have to flow to every rule site from a single place.
+ */
+export function definePolicy<A extends EntityDef>(options: { actor: A }) {
+  const actorEntity = options.actor;
+  return {
+    /**
+     * One standalone policy per entity — no registry in sight here:
+     *
+     *   export const todoPolicy = Policy.from(Todo, { fields, read, … })
+     *
+     * Mirrors the schema side deliberately: `X.from` defines one unit, `X.build`
+     * assembles them. Coverage is checked at `Policy.build(schema, { … })`, which
+     * requires a key per entity — a missing policy is a missing property, named.
+     * Fields inference happens here, one site per call, so a check reaching for a
+     * field it did not declare is a compile error (pinned in policy.type-test.ts).
+     */
+    from<E extends EntityDef, const C extends EntitySelection<E> = {}>(
+      entity: E,
+      definition: {
+        /** What the rules get to SEE of the subject — a selection, traversing refs (§10.2). */
+        fields?: C;
+        read: (ctx: ReadCtx<E, C, A>) => Verdict;
+        /** Sees the entity AS IT WILL LAND — a create has no pre-state (§10.4). */
+        create: (ctx: ReadCtx<E, C, A>) => Verdict;
+        /** Sees both states — the only verb that has two (§10.4). */
+        update: (ctx: UpdateCtx<E, C, A>) => Verdict;
+        /** Sees the entity as it is now — a delete has no post-state (§10.4). */
+        delete: (ctx: ReadCtx<E, C, A>) => Verdict;
+        /** Per-field overrides — the field rule WINS for that field's triples:
+         * `read` filters them, `write` replaces the entity's create/update rule
+         * when they change (delete stays entity-level). */
+        overrides?: {
+          [K in keyof E]?: {
+            read?: (ctx: ReadCtx<E, C, A>) => Verdict;
+            write?: (ctx: ReadCtx<E, C, A>) => Verdict;
+          };
         };
-      };
+      },
+    ): EntityPolicyFor<E> {
+      return {
+        entity,
+        // Bare keys, deliberately: no registry here means no names yet — assembly
+        // namespaces this (see EntityPolicy.fields).
+        fields: (definition.fields ?? {}) as RuntimeSelection,
+        read: definition.read as EntityPolicy["read"],
+        create: definition.create as EntityPolicy["create"],
+        update: definition.update as EntityPolicy["update"],
+        delete: definition.delete as EntityPolicy["delete"],
+        overrides: (definition.overrides ?? {}) as EntityPolicy["overrides"],
+      } as EntityPolicyFor<E>;
     },
-  ): EntityPolicyFor<E> {
-    return {
-      entity,
-      // Bare keys, deliberately: no registry here means no names yet — assembly
-      // namespaces this (see EntityPolicy.fields).
-      fields: (definition.fields ?? {}) as RuntimeSelection,
-      read: definition.read as EntityPolicy["read"],
-      create: definition.create as EntityPolicy["create"],
-      update: definition.update as EntityPolicy["update"],
-      delete: definition.delete as EntityPolicy["delete"],
-      overrides: (definition.overrides ?? {}) as EntityPolicy["overrides"],
-    } as EntityPolicyFor<E>;
-  },
 
-  /**
-   * Assemble one policy per entity into the form the server evaluates, KEYED BY
-   * the registry names. The key does the coverage check: every entity is a
-   * required property, so omitting one is a plain missing-property error naming
-   * the gap. `TripleServer` takes the result alongside the schema it came from.
-   */
-  build<Es extends Entities>(
-    schema: AppSchema<Es>,
-    policies: { [K in keyof Es]: EntityPolicyFor<Es[K]> },
-  ): Policy {
-    return assemblePolicies(schema, policies as Record<string, EntityPolicy>);
-  },
-};
+    /**
+     * Assemble one policy per entity into the form the server evaluates, KEYED BY
+     * the registry names. The key does the coverage check: every entity is a
+     * required property, so omitting one is a plain missing-property error naming
+     * the gap. `TripleServer` takes the result alongside the schema it came from.
+     */
+    build<Es extends Entities>(
+      schema: AppSchema<Es>,
+      policies: { [K in keyof Es]: EntityPolicyFor<Es[K]> },
+    ): Policy {
+      return assemblePolicies(schema, actorEntity, policies as Record<string, EntityPolicy>);
+    },
+  };
+}
 
 /** @internal — `Policy.build` without the generics: checks, then assembly. */
 function assemblePolicies(
   app: AppSchema,
+  actorEntity: EntityDef,
   policies: Record<string, EntityPolicy>,
 ): Policy {
   // The type pairs key → entity structurally; identity makes it exact. Two
@@ -263,7 +302,13 @@ function assemblePolicies(
   };
   for (const entityPolicy of Object.values(byEntity)) walk(entityPolicy.fields, []);
 
-  const built = { app, schema: app.flat, byEntity, dependencies };
+  // The actor record is the actor entity's EVERY field: one subject read per
+  // actor per evaluation, cached with the fields — cheap, and it makes "who is
+  // asking" ordinary data (§10.2).
+  const everyField = Object.fromEntries(Object.keys(actorEntity).map((field) => [field, true]));
+  const actor = { entity: actorEntity, selection: namespaceFields(actorEntity, everyField) };
+
+  const built = { app, schema: app.flat, actor, byEntity, dependencies };
   registerFieldPredicates(built.schema, built);
   return built;
 }
@@ -336,6 +381,7 @@ export function createFilterFactory(
   const read = reader(store);
 
   return (actor: Id) => {
+    const me = actorRecord(loadFields, policy, actor);
     const filter = ([subject, predicate]: Triple): boolean => {
       const entityPolicy = policyFor(policy, predicate);
       // An unknown predicate has no policy, so nobody may read it. Deny by default.
@@ -349,7 +395,7 @@ export function createFilterFactory(
       // nothing) denies, like everything else.
       return (
         check({
-          actor,
+          actor: me,
           subject,
           fields: loadFields(entityPolicy.fields, subject) as EntityResult<EntityDef, unknown, false>,
           read,
@@ -387,6 +433,8 @@ export function checkWrite(
   const loadBefore = fieldsLoader(store, policy.schema);
   const loadAfter = fieldsLoader(after, policy.schema);
   const read = reader(store);
+  // Who is asking, as they are NOW — a write cannot promote its own author.
+  const me = actorRecord(loadBefore, policy, actor);
 
   // Group the delta's triples by (subject, entity namespace). One subject normally
   // has one entity; tx.delete also touches OTHER subjects' inbound refs, which
@@ -423,7 +471,7 @@ export function checkWrite(
 
     if (verb === "delete") {
       // Removing the subject is not a field-sized decision: entity rule only.
-      if (entityPolicy.delete({ actor, subject, fields: before(), read }) !== true) {
+      if (entityPolicy.delete({ actor: me, subject, fields: before(), read }) !== true) {
         return `Not allowed to delete ${entityName(entityPolicy.entity)} ${subject}.`;
       }
       continue;
@@ -434,8 +482,8 @@ export function checkWrite(
     // one entity-rule verdict, evaluated at most once.
     const ctx: UpdateCtx<EntityDef, unknown> =
       verb === "create"
-        ? { actor, subject, fields: landed(), after: landed(), read }
-        : { actor, subject, fields: before(), after: landed(), read };
+        ? { actor: me, subject, fields: landed(), after: landed(), read }
+        : { actor: me, subject, fields: before(), after: landed(), read };
     let entityVerdict: boolean | undefined;
     const entityAllows = (): boolean =>
       (entityVerdict ??=
@@ -451,6 +499,15 @@ export function checkWrite(
     }
   }
   return null;
+}
+
+/** §10.2 — the actor's own record, through the same cached loader as `fields`. */
+function actorRecord(
+  loadFields: ReturnType<typeof fieldsLoader>,
+  policy: Policy,
+  actor: Id,
+): ActorRecord<EntityDef> {
+  return loadFields(policy.actor.selection, actor) as ActorRecord<EntityDef>;
 }
 
 function reader(store: Readable) {
@@ -552,7 +609,7 @@ export function canSeeSubject(
   const loadFields = fieldsLoader(store, policy.schema);
   return (
     entityPolicy.read({
-      actor,
+      actor: actorRecord(loadFields, policy, actor),
       subject,
       fields: loadFields(entityPolicy.fields, subject) as EntityResult<EntityDef, unknown, false>,
       read: (s2, p2) => store.match([s2, p2, undefined]).map((t) => t[2]),
