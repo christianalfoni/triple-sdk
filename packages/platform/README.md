@@ -130,8 +130,9 @@ Every tool runs **as the member** who called it.
 
 `query` speaks the schema's vocabulary, not the wire format: `where` is
 `field → value` (an array means any-of; ref fields accept a bare id string),
-`select` is a list of field names (default: all). At least one `where` is
-required — the engine has no whole-entity scan. Names: `app` and `path` are
+`select` is a list of field names (default: all). Omitting `where` means every
+instance the caller may see — a scan, so lead with one when you can. Names:
+`app` and `path` are
 validated (`[A-Za-z0-9_-]+`, simple relative paths, no `..`, not under
 `draft/`).
 

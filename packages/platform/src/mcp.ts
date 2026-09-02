@@ -91,7 +91,7 @@ const TOOLS = [
         where: {
           type: "object",
           description:
-            "field → required value; at least one (there is no whole-entity scan). An array value means any-of. Ref fields take an id string.",
+            "field → required value. Omit for every instance (a scan — prefer a where). An array value means any-of. Ref fields take an id string.",
         },
         select: {
           type: "array",
@@ -254,7 +254,7 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "        import { Query } from 'triple-sdk/query'; import { schema, App, Todo, User } from 'schema';",
     "- the api base from inside an app (draft or live): location.pathname.replace(/\\/apps\\/.*$/, '/api')",
     "- identity: await (await fetch('/api/me')).json() → { actor, name }; auth is ambient (cookies)",
-    "- every query (app or tool) needs at least one where — there is no whole-entity scan",
+    "- a query with no where means EVERY instance you may see (Query.from(App).select(…)) — a scan, so lead with a where when you can",
     "- your own version, live: useQuery(() => Query.from(App).where('name', '<app>').select({ live: { version: true } }), [])",
     "  — re-renders when someone publishes; show 'new version, refresh' from it",
   ].join("\n");

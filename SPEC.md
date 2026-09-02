@@ -490,6 +490,17 @@ Same single result, ten times the work. There is no cost-based optimizer, so the
 selective constraint belongs first and that is the actor's job. A planner that
 reordered freely would be a different system; see §11.1.
 
+**No constraint at all means every instance.** `Query.from(App).select(…)` is
+legal: `toPayload` records the entity's *instance predicates* (`all`) — one
+required field when there is one, since every instance holds it (§4.5), else
+all of its fields — and the executor seeds from every subject holding any of
+them, through the POS index, under the same visibility gate as any seed. A
+negation first means the same seed, then subtraction. The server ships each
+root's seed triple so the client finds the same roots in its cache, and the
+seed predicate joins the query's watched set (§6.4) so a new instance re-runs
+the list. It is a scan, priced like any unselective `where`: the planner rule
+above still applies.
+
 ### 6.3 Execution
 
 Two steps, both against the indexes of §2:
@@ -668,10 +679,11 @@ Query.from(Todo).where("owner", me).whereBetween("text", "a", "m")  // inclusive
 - `where` with an ARRAY is the IN of the system — one symmetric rule: match if
   the field's values and the given values intersect. Unambiguous because no field
   ever holds an array (§4.1). An empty array matches nothing.
-- Negations (`whereNot`, `whereAbsent`) REFINE, never seed: you cannot scan for
-  what is missing (§0.3) — a query still opens with a positive `.where()`,
-  `.whereId()` or `whereEither`. A policy-hidden triple already reads as absent
-  (§10.5), so negation and visibility agree by construction.
+- Negations (`whereNot`, `whereAbsent`) REFINE: you cannot scan for what is
+  missing (§0.3). Placed first or alone they refine the every-instance seed
+  (§6.2) — everything, minus — which is a scan; a positive `.where()` first is
+  the cheap form. A policy-hidden triple already reads as absent (§10.5), so
+  negation and visibility agree by construction.
 - **Negation soundness on a partial cache (§7.6):** the client re-derives roots
   from whatever its cache holds — and there, a missing triple looks exactly like
   absence. So the server ships the negation predicate's readable triples for

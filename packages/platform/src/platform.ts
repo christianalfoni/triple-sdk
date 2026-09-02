@@ -75,12 +75,9 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
   const appByName = (actor: string, name: string) =>
     queryAs(actor, Query.from(App).where("name", name).select({ name: true, live: { version: true } }))[0];
 
-  /** Every app has a name and every string is ≥ "" — the one seed that lists a whole entity (§6.9). */
+  /** No constraint: every app this member may see (§6.2). */
   const apps = (actor: string) =>
-    queryAs(
-      actor,
-      Query.from(App).whereGreaterOrEqual("name", "").orderBy("name").select({ name: true, live: { version: true } }),
-    );
+    queryAs(actor, Query.from(App).orderBy("name").select({ name: true, live: { version: true } }));
 
   const drafts = (actor: string, app: { id: string }) =>
     queryAs(

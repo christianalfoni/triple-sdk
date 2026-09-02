@@ -143,15 +143,17 @@ applied in your order, each filtering what survived the last:
 |---|---|
 | `where(field, value)` · `where(field, [a, b])` | holds this value · holds any of these (no field ever holds an array, so IN is unambiguous) |
 | `whereId(id)` | pin to one known subject (§6.7) |
-| `whereNot` · `whereAbsent` | negations — they **refine**, never seed: you cannot scan for what is missing (§0.3) |
+| *(no `where` at all)* | **every instance** you may see, seeded from a required predicate (§6.2) — a scan, so lead with a `where` when you can |
+| `whereNot` · `whereAbsent` | negations — refinements; first or alone they mean *every instance, minus*: you cannot scan for what is missing (§0.3), but you can scan for everything and subtract |
 | `whereGreater(OrEqual)` · `whereLesser(OrEqual)` · `whereBetween` | ranges on the encoded order |
 | `whereEither(branch, branch)` | OR across conditions; may seed as the union of its branches (§6.10) |
 | `.orderBy().limit().after(cursor)` | a live window with keyset cursors (§6.6) |
 | `.select((todo) => ({ comments: Query.from(Comment).where("todo", todo)… }))` | a correlated subquery — the join, windowed **per parent** (§6.8) |
 
 **How it is evaluated:** nothing runs here. The builder checks types at compile
-time and rejects unrunnable shapes eagerly — "a query needs at least one
-`where`", "a negation cannot come first". The payload is inspectable JSON.
+time; a query with no positive `where` is compiled with `all: ["todo/text"]`,
+the predicate every todo holds, so the executor can seed from it. The payload
+is inspectable JSON.
 
 > ✓ the wire is data — loggable, diffable, replayable · ✗ no planner: put the selective constraint first, there is no safety net
 > SPEC §6.1–§6.2 · §6.5 typing · §6.7–§6.10
@@ -448,7 +450,7 @@ deps)` like `useMemo`; it renders through `useSyncExternalStore`, mounting
 watches and unmounting closes. `usePresence` and `useTransaction` (§9) come from
 the same `createHooks(client)`.
 
-> ✓ cache-first paint, optimistic overlays and live updates are ONE mechanism — a local re-run · ✗ both executors must agree exactly (pinned by the 36-step smoke), and CPU is spent on both sides
+> ✓ cache-first paint, optimistic overlays and live updates are ONE mechanism — a local re-run · ✗ both executors must agree exactly (pinned by the 37-step smoke), and CPU is spent on both sides
 > SPEC §6.4 · §6.6 · §7.5 · §7.6 · §11.4 row identity
 
 ---
@@ -972,7 +974,7 @@ members watch happen (`pnpm service:smoke` proves it end to end, keylessly).
 
 ```bash
 pnpm dev           # demo at localhost:5173 — open TWO windows, they sync live
-pnpm smoke         # 36 steps against a real server (memory, or RDF_DB=.data/app.db for sqlite)
+pnpm smoke         # 37 steps against a real server (memory, or RDF_DB=.data/app.db for sqlite)
 pnpm invariant     # state === fold(log), both adapters · policy · repair · whole roots
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test

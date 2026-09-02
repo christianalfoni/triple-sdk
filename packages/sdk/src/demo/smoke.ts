@@ -29,6 +29,16 @@ todos.subscribe(() => notifications++);
 await todos.ready;
 log("watch", `${todos.data.length} todos, ${client.size} triples cached`);
 
+// §6.2 — no constraint at all: every todo this actor may see. Ada's private one
+// is not hidden by a where; it is absent from the reader's world (§10.5).
+const everyTodo = client.watch(Query.from(Todo).select({ text: true }));
+await everyTodo.ready;
+if (everyTodo.data.length !== 3) {
+  throw new Error(`every instance: expected 3 visible of 4, got ${everyTodo.data.length}`);
+}
+log("every instance", `${everyTodo.data.length} todos visible without a where (4 in the store; Ada's private one is not)`);
+everyTodo.close();
+
 // create — optimistic: visible synchronously, before the server answers
 const id = newId("todo");
 const creating = client.transact((tx) => {

@@ -33,7 +33,7 @@ import {
   type FieldType,
   type Schema,
 } from "./schema.ts";
-import type { Id, ObjectValue, Readable, Ref, Triple, Value } from "./types.ts";
+import type { Id, ObjectValue, Pattern, Readable, Ref, Triple, Value } from "./types.ts";
 import { encodeValue, isRef, tripleKey } from "./value.ts";
 
 // -----------------------------------------------------------------------------
@@ -283,6 +283,13 @@ export type QueryPayload = {
   subject?: Id;
   /** §6.8 — correlated subqueries, one result array per key on every row. */
   subqueries?: readonly RuntimeSubquery[];
+  /**
+   * §6.2 — no positive seed (no constraint at all, or a negation first): the
+   * roots are EVERY instance of the entity, found as every subject holding any
+   * of these predicates — a required one when the entity has one (every
+   * instance holds it, §4.5), else all of its predicates.
+   */
+  all?: readonly string[];
   constraints: readonly Constraint[];
   selection: RuntimeSelection;
   /** §6.6 — a window: explicit order (the set has none), keyset cursor, size. */
@@ -672,8 +679,13 @@ export const Query = {
 
 /** Strip a built query down to its wire form, namespacing the selection. */
 export function toPayload(query: AnySubquery): QueryPayload {
+  // A positive first constraint (or a correlation, bound to one per parent)
+  // seeds through the index; anything else means every instance (§6.2).
+  const first = query.constraints[0];
+  const seeded = first !== undefined && (canSeed(first) || isCorrelated(first));
   return {
     ...(query.subject !== undefined ? { subject: query.subject } : {}),
+    ...(query.subject === undefined && !seeded ? { all: instancePredicates(query.entity) } : {}),
     ...(query.subqueries.length > 0
       ? {
           subqueries: query.subqueries.map((entry) => ({
@@ -690,6 +702,17 @@ export function toPayload(query: AnySubquery): QueryPayload {
     ),
     ...query.window,
   };
+}
+
+/**
+ * §6.2 — the predicates that, together, find every instance of an entity: one
+ * required field when there is one (every instance holds it, §4.5), else all
+ * of its fields, since an instance is whichever of them it holds.
+ */
+function instancePredicates(entity: EntityDef): string[] {
+  const fields = Object.entries(entity) as [string, AnyFieldBuilder][];
+  const required = fields.filter(([, builder]) => !builder.field.multiple && !builder.field.optional);
+  return (required.length > 0 ? [required[0]!] : fields).map(([field]) => predicateOf(entity, field));
 }
 
 /**
@@ -788,7 +811,9 @@ function namespaceSelection(
 export function queryPredicates(payload: QueryPayload): Set<string> {
   const predicates = new Set<string>();
   for (const constraint of payload.constraints) constraintPredicates(constraint, predicates);
-
+  // An every-instance seed watches its seed predicate: a new instance arrives
+  // as that predicate's triple, and the list must re-run.
+  for (const predicate of payload.all ?? []) predicates.add(predicate);
 
   const walk = (selection: RuntimeSelection): void => {
     for (const [predicate, sub] of Object.entries(selection)) {
@@ -1002,7 +1027,7 @@ function wholeOnly(
 
 /** The root entity's predicates this payload reads: its constraints and its own selection keys. */
 function rootPredicates(payload: QueryPayload): Set<string> {
-  const predicates = new Set<string>(Object.keys(payload.selection));
+  const predicates = new Set<string>([...Object.keys(payload.selection), ...(payload.all ?? [])]);
   const walk = (constraints: readonly Constraint[]): void => {
     for (const constraint of constraints) {
       if ("either" in constraint) constraint.either.forEach(walk);
@@ -1113,6 +1138,13 @@ export function collectPayloadTriples(
     }
   };
   for (const constraint of payload.constraints) shipConstraint(constraint);
+  // §6.2 — an every-instance seed ships each root's seed triple too, so the
+  // client finds the same roots in its own cache.
+  for (const predicate of payload.all ?? []) {
+    for (const triple of matchAll(store, roots, predicate)) {
+      if (canRead(triple)) keep(triple);
+    }
+  }
 
   // §6.8 — correlated subqueries: walk the ref path to the attachment subjects
   // (the roots themselves when there is none), then recurse once per (subject,
@@ -1214,25 +1246,33 @@ function windowedRoots(
   canRead: ReadFilter,
   negationEvidence?: NegationEvidence,
 ): Id[] {
-  const { order, limit, constraints } = payload;
+  const { order, limit, constraints, all } = payload;
   const first = constraints[0];
+  // Two seeds ride the fast path: ONE plain-value constraint, or NO constraint
+  // with a single every-instance predicate (§6.2) — "the latest 50 todos".
+  const seed: Pattern | undefined =
+    constraints.length === 1 && first !== undefined && "value" in first
+      ? [undefined, first.predicate, first.value]
+      : constraints.length === 0 && all !== undefined && all.length === 1
+        ? [undefined, all[0]!, undefined]
+        : undefined;
   if (
     payload.subject !== undefined || // a pinned subject needs no window machinery
     order === undefined ||
     limit === undefined ||
-    first === undefined ||
-    !("value" in first) || // only the plain form rides the fast path
-    constraints.length !== 1 ||
+    seed === undefined ||
     store.topSubjects === undefined
   ) {
     return applyWindow(store, resolveRoots(store, payload, canRead, negationEvidence), payload, canRead);
   }
 
-  const candidates = store.match([undefined, first.predicate, first.value]).map((t) => t[0]);
+  // The seed triple per candidate — the §10.5 visibility gate of each root.
+  const seedTriples = new Map(store.match(seed).map((triple) => [triple[0], triple] as const));
+  const candidates = [...seedTriples.keys()];
   if (candidates.length <= limit * 4) {
     // Small sets: batching machinery costs more than it saves.
     canRead.preload?.(candidates);
-    const visible = candidates.filter((id) => canRead([id, first.predicate, first.value]));
+    const visible = candidates.filter((id) => canRead(seedTriples.get(id)!));
     return applyWindow(store, visible, payload, canRead);
   }
 
@@ -1248,9 +1288,9 @@ function windowedRoots(
     canRead.preload?.(batch.map((t) => t[0]));
     for (const triple of batch) {
       if (roots.length >= limit) break;
-      // Both gates of §10.5: the order value AND the constraint triple must be
+      // Both gates of §10.5: the order value AND the seed triple must be
       // readable for the row to exist in this reader's world.
-      if (canRead(triple) && canRead([triple[0], first.predicate, first.value])) {
+      if (canRead(triple) && canRead(seedTriples.get(triple[0])!)) {
         roots.push(triple[0]);
       }
     }
@@ -1305,19 +1345,26 @@ function resolveRoots(
     return subjects;
   }
 
+  // §6.2 — a positive first constraint seeds through the index. Otherwise (no
+  // constraint at all, or a negation first) the roots are EVERY instance and
+  // every constraint refines — you cannot scan for what is missing (§0.3), but
+  // you can scan for everything and then subtract.
   const [first, ...rest] = constraints;
-  if (!first) throw new Error("A query needs a .whereId() or at least one .where().");
-  if (!canSeed(first) && !("either" in first)) {
-    // §6.9 — you cannot scan for what is missing (§0.3): negations only refine.
-    throw new Error(
-      "A negation cannot come first — seed the query with a positive .where() (or .whereId).",
-    );
+  let subjects: Id[];
+  let refinements: readonly Constraint[];
+  if (first !== undefined && (canSeed(first) || "either" in first)) {
+    subjects = seedRoots(store, first, canRead, negationEvidence, payload.all);
+    shipEvidence(subjects, first); // an either-seed may hold negations inside
+    refinements = rest;
+  } else {
+    if (payload.all === undefined) {
+      throw new Error("A query payload needs a positive constraint, a subject, or `all` (every instance).");
+    }
+    subjects = seedEveryInstance(store, payload.all, canRead);
+    refinements = constraints;
   }
 
-  let subjects = seedRoots(store, first, canRead, negationEvidence);
-  shipEvidence(subjects, first); // an either-seed may hold negations inside
-
-  for (const constraint of rest) {
+  for (const constraint of refinements) {
     shipEvidence(subjects, constraint);
     // Positive forms AND negations batch one read per constraint (§11.4); only
     // `whereEither` refinements evaluate per surviving subject — the seed has
@@ -1363,6 +1410,7 @@ function seedRoots(
   first: Constraint,
   canRead: ReadFilter,
   negationEvidence?: NegationEvidence,
+  all?: readonly string[],
 ): Id[] {
   if ("either" in first) {
     const seen = new Set<Id>();
@@ -1370,7 +1418,7 @@ function seedRoots(
     for (const branch of first.either) {
       for (const subject of resolveRoots(
         store,
-        { constraints: branch, selection: {} },
+        { constraints: branch, selection: {}, ...(all !== undefined ? { all } : {}) },
         canRead,
         negationEvidence,
       )) {
@@ -1383,7 +1431,7 @@ function seedRoots(
     return union;
   }
   if (isCorrelated(first) || "not" in first || "absent" in first) {
-    throw new Error("A negation cannot come first — seed the query with a positive .where().");
+    throw new Error("seedRoots needs a seeding constraint — resolveRoots handles the rest.");
   }
   const matches =
     "value" in first
@@ -1402,6 +1450,28 @@ function seedRoots(
     if (!seen.has(triple[0]) && canRead(triple)) {
       seen.add(triple[0]);
       subjects.push(triple[0]);
+    }
+  }
+  return subjects;
+}
+
+/**
+ * §6.2 — every instance: every subject holding any of the entity's instance
+ * predicates, through the POS index one predicate at a time. The same
+ * visibility gate as any seed: a triple you may not read never makes its
+ * subject a root (§10.5).
+ */
+function seedEveryInstance(store: Readable, all: readonly string[], canRead: ReadFilter): Id[] {
+  const seen = new Set<Id>();
+  const subjects: Id[] = [];
+  for (const predicate of all) {
+    const matches = store.match([undefined, predicate, undefined]);
+    canRead.preload?.(matches.map((triple) => triple[0]));
+    for (const triple of matches) {
+      if (!seen.has(triple[0]) && canRead(triple)) {
+        seen.add(triple[0]);
+        subjects.push(triple[0]);
+      }
     }
   }
   return subjects;
