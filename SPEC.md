@@ -847,8 +847,23 @@ Three consequences, and they are why `pull`, `client.subscribe` and the low-leve
 - **Reading outside a query is meaningless.** `client.snapshot()` remains as an
   inspection hatch for the demo's triple panel, and is documented as such — not as
   a way to read data.
-- **The cache needs eviction.** Nothing currently drops triples when the last query
-  needing them closes, so a long session's cache only grows (§11.1).
+- **The cache needs eviction.** Closing a query re-collects what every surviving
+  query needs (the server's own collector, run locally) and drops the rest — the
+  cache holds exactly the union of its live queries, plus whatever pushes have
+  added since the last close.
+- **A root must be whole for what the query reads.** Fan-out is filtered by
+  permission, not by interest (§7.7), so a client receives deltas for entities it
+  never queried and keeps their triples — a lone `completed` for a todo it holds
+  nothing else of. A later query seeding from that triple would materialize a row
+  missing a field its type promises. So a subject only becomes a root when every
+  *required* field the query constrains on or selects is present in the store.
+  Not every required field of the entity: a query legitimately holds only what it
+  asked for (§7.5), and that partiality is fine — the check is scoped to the
+  query's own reads precisely so it hides the stray and never a fetched row. The
+  server never sees a difference (§4.5 keeps every subject whole); a freshly
+  created entity appears at once, since a create carries all its required fields
+  in one delta. Lists (`multiple`) have no completeness signal and may show a
+  subset in that window — they degrade, they do not crash.
 
 ---
 

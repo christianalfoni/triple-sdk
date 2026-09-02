@@ -167,6 +167,24 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
   console.log(`  lazy    person↔dog cycle: hash ${cyclic.hash} · person→dog→human→"${round}" ✓`);
 }
 
+// §7.6 — a root must be WHOLE for what the query reads. A partial cache holding
+// one stray triple of a todo (a pushed `completed` for an entity never queried)
+// must not seed a row missing the required `text` the query selects; once `text`
+// arrives the row appears — and `owner`, required but unread here, is not needed.
+{
+  const cache = new Store();
+  cache.apply({ added: [["todo_stray", "todo/completed", true]], removed: [] });
+  const completedTodos = Query.from(Todo).where("completed", true).select({ text: true });
+  const partial = runQuery(cache, appSchema.flat, completedTodos);
+  cache.apply({ added: [["todo_stray", "todo/text", "now whole"]], removed: [] });
+  const whole = runQuery(cache, appSchema.flat, completedTodos);
+  if (partial.length !== 0 || whole.length !== 1 || whole[0]!.text !== "now whole") {
+    console.error(`  whole roots: partial=${JSON.stringify(partial)} whole=${JSON.stringify(whole)}`);
+    process.exit(1);
+  }
+  console.log("  whole   a stray triple seeds no row · the row appears once the required field it reads is present ✓");
+}
+
 // §10.4 — per-field write overrides: a team MATE may toggle `completed` on the
 // owner's team todo (the field override), but renaming it stays owner-only
 // (the entity rule).

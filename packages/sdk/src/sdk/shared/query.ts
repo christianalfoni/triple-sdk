@@ -922,7 +922,11 @@ export function runPayload(
   schema: Schema,
   payload: QueryPayload,
 ): Record<string, unknown>[] {
-  const roots = applyWindow(store, resolveRoots(store, payload), payload);
+  const roots = applyWindow(
+    store,
+    wholeOnly(store, schema, payload, resolveRoots(store, payload)),
+    payload,
+  );
   return roots.map((subject) => {
     const row = materialize(store, schema, subject, payload.selection);
     for (const subquery of payload.subqueries ?? []) {
@@ -966,6 +970,84 @@ function rowsAtPath(
  * A per-triple visibility test. Supplied by the server from its policy (§10); the
  * client passes nothing, because its cache is already filtered (§7.6).
  */
+/**
+ * §7.6 — a root must be WHOLE for what the query reads: every required field it
+ * constrains on or selects must be present in the store. The server keeps every
+ * subject whole as a write invariant (§4.5), so there the filter passes
+ * everything. A client's cache is partial in two ways, and the rule must tell
+ * them apart: a query legitimately holds only the fields it asked for (§7.5),
+ * which is fine — but a pushed delta for an entity it never queried leaves a lone
+ * triple behind, and a later query seeding from that triple would materialize a
+ * row missing a field its type promises. Checking only the fields the query
+ * reads hides exactly the second case: the stray subject stays invisible until
+ * the query's own fetch completes it, while a row fetched by any query is whole
+ * by construction. A freshly created entity appears at once, since a create
+ * carries every required field in one delta.
+ */
+function wholeOnly(
+  store: Readable,
+  schema: Schema,
+  payload: QueryPayload,
+  roots: Id[],
+): Id[] {
+  const read = rootPredicates(payload);
+  const required = requiredPredicates(schema, payloadEntity(payload)).filter((predicate) =>
+    read.has(predicate),
+  );
+  if (required.length === 0) return roots;
+  return roots.filter((subject) =>
+    required.every((predicate) => store.match([subject, predicate, undefined]).length > 0),
+  );
+}
+
+/** The root entity's predicates this payload reads: its constraints and its own selection keys. */
+function rootPredicates(payload: QueryPayload): Set<string> {
+  const predicates = new Set<string>(Object.keys(payload.selection));
+  const walk = (constraints: readonly Constraint[]): void => {
+    for (const constraint of constraints) {
+      if ("either" in constraint) constraint.either.forEach(walk);
+      else predicates.add(constraint.predicate);
+    }
+  };
+  walk(payload.constraints);
+  return predicates;
+}
+
+/** The entity a payload is rooted at — every predicate in it carries the name. */
+function payloadEntity(payload: QueryPayload): string {
+  const predicate = firstPredicate(payload.constraints) ?? Object.keys(payload.selection)[0];
+  if (predicate !== undefined) return predicate.slice(0, predicate.indexOf("/"));
+  return payload.subject !== undefined ? subjectEntityName(payload.subject) : "";
+}
+
+function firstPredicate(constraints: readonly Constraint[]): string | undefined {
+  for (const constraint of constraints) {
+    if (!("either" in constraint)) return constraint.predicate;
+    for (const branch of constraint.either) {
+      const predicate = firstPredicate(branch);
+      if (predicate !== undefined) return predicate;
+    }
+  }
+  return undefined;
+}
+
+const requiredByEntity = new WeakMap<Schema, Map<string, string[]>>();
+
+/** The predicates of an entity's required fields (single, not optional), memoized per schema. */
+function requiredPredicates(schema: Schema, entity: string): string[] {
+  let byEntity = requiredByEntity.get(schema);
+  if (!byEntity) requiredByEntity.set(schema, (byEntity = new Map()));
+  let required = byEntity.get(entity);
+  if (required === undefined) {
+    const prefix = `${entity}/`;
+    required = Object.entries(schema)
+      .filter(([predicate, field]) => predicate.startsWith(prefix) && !field.multiple && !field.optional)
+      .map(([predicate]) => predicate);
+    byEntity.set(entity, required);
+  }
+  return required;
+}
+
 export type ReadFilter = ((triple: Triple) => boolean) & {
   /** Bulk-load the policy contexts for these subjects before filtering (§11.4). */
   preload?: (subjects: Id[]) => void;
