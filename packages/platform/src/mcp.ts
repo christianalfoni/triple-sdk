@@ -93,9 +93,9 @@ const TOOLS = [
   {
     name: "set_audience",
     description:
-      "Who may OPEN the app. members (default): workspace members only. invited: also guests — signed-in people who are " +
-      "not members — whose email was added with invite_to_app. public: anyone, signed in or not. Guests and anonymous " +
-      "viewers reach the same /api under the same policy, so they only ever see data the rules grant them.",
+      "Who may OPEN the app. members (default): every workspace member. invited: ONLY the emails added with invite_to_app — " +
+      "members or outsiders alike (outsiders sign in and become app users). public: anyone, signed in or not. Admins always may. " +
+      "App users and anonymous viewers reach the same /api under the same policy, so they only ever see data the rules grant them.",
     inputSchema: {
       type: "object",
       properties: { app: { type: "string" }, audience: { type: "string", enum: ["members", "invited", "public"] } },
@@ -104,7 +104,7 @@ const TOOLS = [
   },
   {
     name: "invite_to_app",
-    description: "Admit one guest to an app (audience must be invited), by the email their sign-in will carry.",
+    description: "Admit one person to an app (audience must be invited) by the email their sign-in carries — a member, or an outsider who becomes an app user.",
     inputSchema: {
       type: "object",
       properties: { app: { type: "string" }, email: { type: "string" } },
@@ -317,10 +317,10 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "",
     "Who is who (ctx.actor.role in every rule, mirrored from the identity provider):",
     "- admin, member: workspace members. They develop — every app's drafts, publish, audiences, invites.",
-    "- guest: signed in but not a member — an app's user. Opens apps whose audience admits them; sees only",
-    "  the data the rules grant a guest (typically: what they own). They never see drafts.",
+    "- appUser: signed in but not a member — an app's user. Opens apps whose audience admits them; sees only",
+    "  the data the rules grant an app user (typically: what they own). They never see drafts.",
     "- anonymous: not signed in. Opens public apps only; /api/me is 401 for them.",
-    "Apps start members-only. set_audience widens them; invite_to_app lists guest emails; releases are immutable.",
+    "Apps start members-only. set_audience changes who may open them; invite_to_app lists emails; releases are immutable.",
     "",
     "Building apps:",
     `- write_file edits DRAFTS, served immediately at ${appBase}/<app>/draft/`,

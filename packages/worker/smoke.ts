@@ -47,7 +47,7 @@ const me = await fetch(`${base}/api/me`, { headers: { "x-actor": "user_alice" } 
 if (!me.ok) fail(`/api/me: ${me.status}`);
 log("edge identity", JSON.stringify(await me.json()));
 
-const alice = member("user_alice", "Alice");
+const alice = member("user_alice", "Alice", "admin");
 const bob = member("user_bob", "Bob");
 
 const boardQuery = Query.from(Todo)
@@ -122,7 +122,7 @@ const mcpCall = async (
   const { result } = (await response.json()) as { result: { content: { text: string }[]; isError?: boolean } };
   return { text: result.content[0]!.text, isError: result.isError === true };
 };
-const mcp = async (actor: string, name: string, tool: string, args: object, role = "member"): Promise<string> => {
+const mcp = async (actor: string, name: string, tool: string, args: object, role = "admin"): Promise<string> => {
   const outcome = await mcpCall(identity(actor, name, role), tool, args);
   if (outcome.isError) fail(`mcp ${tool}: ${outcome.text}`);
   return outcome.text;
@@ -160,46 +160,48 @@ if (registry.data[0]?.live?.version !== 2) {
 log("live version", "a draft edit leaves live alone · publish 2 → bob's running query sees live.version 2");
 
 // -- WHO IS WHO: the edge mirrors the caller's standing into their User row and
-//    the cell's rules read it (`ctx.actor.role`). A guest is signed in but not a
+//    the cell's rules read it (`ctx.actor.role`). An app user is signed in but not a
 //    member; anonymous is not signed in. Both reach the same /api, same policy.
-const guest = identity("user_guest", "Guest", "guest", "guest@example.com");
+const appUser = identity("user_appuser", "App User", "appUser", "appuser@example.com");
 const anonymous = { "x-actor": "anonymous" };
 const open = async (path: string, who: Record<string, string>) => (await fetch(`${appUrl}${path}`, { headers: who })).status;
 
-if ((await open("/", guest)) !== 404) fail("a guest opened a members-only app");
+if ((await open("/", appUser)) !== 404) fail("an app user opened a members-only app");
 if ((await open("/", anonymous)) !== 404) fail("anonymous opened a members-only app");
 await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "invited" });
-await mcp("user_alice", "Alice", "invite_to_app", { app: "hello", email: "guest@example.com" });
-if ((await open("/", guest)) !== 200) fail("an invited guest could not open the app");
-if ((await open("/draft/", guest)) !== 404) fail("a guest saw the draft");
+await mcp("user_alice", "Alice", "invite_to_app", { app: "hello", email: "appuser@example.com" });
+if ((await open("/", appUser)) !== 200) fail("an invited app user could not open the app");
+if ((await open("/draft/", appUser)) !== 404) fail("an app user saw the draft");
 if ((await open("/", anonymous)) !== 404) fail("anonymous opened an invited app");
+if ((await open("/", identity("user_bob", "Bob"))) !== 404) fail("an unlisted member opened an invited app");
+if ((await open("/", identity("user_alice", "Alice", "admin"))) !== 200) fail("the admin could not open the invited app");
 await mcp("user_alice", "Alice", "set_audience", { app: "hello", audience: "public" });
 if ((await open("/", anonymous)) !== 200) fail("anonymous could not open a public app");
-log("audiences", "members-only 404s guests · invited admits the listed guest, never anonymous · public admits anonymous · drafts stay members-only");
+log("audiences", "members-only 404s app users · invited admits the listed app user and admins, not bob (unlisted member) nor anonymous · public admits anonymous · drafts stay members-only");
 
-// -- a guest's data world is their own rows. The board is for members.
+// -- an app user's data world is their own rows. The board is for members.
 await alice.transact((tx) => {
   tx.edit(Todo, sharedId).shared = true;
 });
-const guestClient = member("user_guest", "Guest", "guest", "guest@example.com");
-const guestTodos = guestClient.watch(Query.from(Todo).select({ text: true }));
-await guestTodos.ready;
+const appUserClient = member("user_appuser", "App User", "appUser", "appuser@example.com");
+const appUserTodos = appUserClient.watch(Query.from(Todo).select({ text: true }));
+await appUserTodos.ready;
 const boardDeadline = Date.now() + 3000;
 while (bobBoard.data.length !== 1 && Date.now() < boardDeadline) await settle();
 if (bobBoard.data.length !== 1) fail("bob did not see the re-shared todo");
-if (guestTodos.data.length !== 0) fail(`a guest saw ${guestTodos.data.length} member todos`);
-const promoted = await guestClient
+if (appUserTodos.data.length !== 0) fail(`an app user saw ${appUserTodos.data.length} member todos`);
+const promoted = await appUserClient
   .transact((tx) => {
-    tx.edit(User, "user_guest").role = "admin";
+    tx.edit(User, "user_appuser").role = "admin";
   })
   .then(() => "ALLOWED", (error: Error) => error.message);
-if (promoted === "ALLOWED") fail("a guest promoted themselves");
-log("guest data", `bob sees the re-shared todo, the guest sees none of it · self-promotion: "${promoted}"`);
+if (promoted === "ALLOWED") fail("an app user promoted themselves");
+log("app user data", `bob sees the re-shared todo, the app user sees none of it · self-promotion: "${promoted}"`);
 
 // -- inviting INTO the workspace is the identity provider's job, and admin-only.
 const refused = await mcpCall(identity("user_bob", "Bob"), "invite_member", { email: "carol@example.com" });
 if (!refused.text.includes("admin")) fail(`a member invited someone: ${refused.text}`);
-const invited = await mcp("user_alice", "Alice", "invite_member", { email: "carol@example.com", role: "member" }, "admin");
+const invited = await mcp("user_alice", "Alice", "invite_member", { email: "carol@example.com", role: "member" });
 if (!invited.includes("carol@example.com")) fail(`the admin's invite failed: ${invited}`);
 log("invite member", `bob (member) is refused · alice (admin): ${invited}`);
 

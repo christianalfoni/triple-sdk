@@ -1,7 +1,7 @@
 // SERVER ONLY (§10.1) — the worker imports the shape; the shape never imports this.
 //
 // The trust split, stated once: the EDGE decides who reaches the cell and AS
-// WHOM (a member with a role, a guest, or anonymous — WorkOS says); these rules
+// WHOM (a member with a role, an app user, or anonymous — WorkOS says); these rules
 // decide row-level access within. `shared` is in the declared fields, so
 // flipping it is a visibility change the engine can see — unsharing arrives at
 // other members as a live removal (§10.6), and at offline members via repair.
@@ -22,10 +22,10 @@ const isMember = (actor: { role?: string | undefined }): boolean =>
  * lambdas and cannot describe themselves, so this is kept next to them.
  */
 export const accessRules = [
-  "Todos are PRIVATE to their owner unless shared=true — then every MEMBER sees them (guests never do).",
+  "Todos are PRIVATE to their owner unless shared=true — then every MEMBER sees them (app users never do).",
   "Only the owner writes, except `completed`, which anyone who can see the todo may toggle.",
-  "Creating a todo: set owner to the viewer — tx.create(Todo, { …, owner: { id: me.actor } }). Guests may own todos.",
-  "Users: members read every member; a guest reads only themselves. Nobody writes another's row; `role` is never client-writable.",
+  "Creating a todo: set owner to the viewer — tx.create(Todo, { …, owner: { id: me.actor } }). App users may own todos.",
+  "Users: members read every member; an app user reads only themselves. Nobody writes another's row; `role` is never client-writable.",
 ].join("\n");
 
 export const userPolicy = Policy.from(User, {
@@ -35,7 +35,7 @@ export const userPolicy = Policy.from(User, {
   delete: (ctx) => ctx.subject === ctx.actor.id,
   overrides: {
     // The edge mirrors `role` from the identity provider through the cell's own
-    // commit path. No client may write it — not even its owner: a guest could
+    // commit path. No client may write it — not even its owner: an app user could
     // otherwise promote themselves.
     role: { write: () => false },
   },

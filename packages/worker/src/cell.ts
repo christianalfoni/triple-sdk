@@ -77,7 +77,7 @@ export class WorkspaceCell {
     const name = request.headers.get("x-actor-name");
     const email = request.headers.get("x-actor-email") ?? undefined;
     const claimed = request.headers.get("x-actor-role");
-    const role = claimed === "admin" || claimed === "member" || claimed === "guest" ? claimed : undefined;
+    const role = claimed === "admin" || claimed === "member" || claimed === "appUser" ? claimed : undefined;
     if (!actor || actor === "anonymous" || !name || !role) return;
     const held = (predicate: string) => this.#server.storage.match([actor, predicate, undefined])[0]?.[2];
     if (held("user/name") === name && held("user/role") === role && held("user/email") === email) return;

@@ -16,8 +16,8 @@ export type Env = {
 
 export type Identity = { actor: string; name: string; email?: string };
 
-/** An actor's standing in ONE workspace: organization roles, or `guest` for a signed-in non-member. */
-export type Role = "admin" | "member" | "guest";
+/** An actor's standing in ONE workspace: organization roles, or `appUser` for a signed-in non-member. */
+export type Role = "admin" | "member" | "appUser";
 
 const WORKOS = "https://api.workos.com";
 
@@ -80,14 +80,14 @@ export async function memberships(
 
 /**
  * The actor's standing in this workspace. Members carry their organization
- * role; anyone else signed in is a `guest` — the cell's policy decides what a
- * guest may open and see. Dev: `x-actor-role` (admin | member | guest),
+ * role; anyone else signed in is an `appUser` — the cell's policy decides what an
+ * app user may open and see. Dev: `x-actor-role` (admin | member | appUser),
  * default member.
  */
 export async function roleIn(request: Request, identity: Identity, org: string, env: Env): Promise<Role> {
   if (env.DEV_AUTH === "1") {
     const claimed = request.headers.get("x-actor-role");
-    return claimed === "admin" || claimed === "guest" ? claimed : "member";
+    return claimed === "admin" || claimed === "appUser" ? claimed : "member";
   }
   const cached = membershipCache.get(identity.actor);
   const roles =
@@ -95,7 +95,7 @@ export async function roleIn(request: Request, identity: Identity, org: string, 
       ? cached.roles
       : new Map((await memberships(identity, env)).map((m) => [m.id, m.role]));
   membershipCache.set(identity.actor, { roles, at: Date.now() });
-  return roles.get(org) ?? "guest";
+  return roles.get(org) ?? "appUser";
 }
 
 const membershipCache = new Map<string, { roles: Map<string, "admin" | "member">; at: number }>();

@@ -69,7 +69,7 @@ import type { Delta, Id, Readable, Triple, Value } from "../shared/types.ts";
  * `definePolicy({ actor })`. Lenient like `fields`: an actor with no row yet
  * ("system", "anonymous") is `{ id }` alone, so `ctx.actor.role` reads
  * undefined — and undefined denies. Write rules POSITIVELY (`role === "member"`),
- * never by exclusion (`role !== "guest"` would admit the unknown).
+ * never by exclusion (`role !== "appUser"` would admit the unknown).
  */
 export type ActorRecord<A extends EntityDef> = { id: Id } & EntityResult<
   A,

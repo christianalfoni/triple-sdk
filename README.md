@@ -104,7 +104,7 @@ shape.
 
 **How it is evaluated:** every write, on both sides, runs `validateValue(field,
 value)` — type, cardinality, for `Schema.object()` the full shape (§4.7), and
-for `Schema.oneOf("admin", "member", "guest")` membership in the declared
+for `Schema.oneOf("admin", "member", "appUser")` membership in the declared
 values (§4.8; the field types as that literal union) — the client for an early
 error, the server authoritatively. Values enter the
 store in an **order-preserving encoding** — `s:Decide…`, `n:…`, `b:true`,
@@ -285,7 +285,7 @@ read(ctx)      = false || true                                           → ✓
 
 Because `ctx.actor` is a row in the cell, "who is asking" is data: the service
 mirrors each caller's standing from the identity provider into `User.role`
-(`admin` · `member` · `guest`) and rules read it — `shared === true &&
+(`admin` · `member` · `appUser`) and rules read it — `shared === true &&
 ctx.actor.role === "member"` — with no transport metadata in sight. An actor
 with no row yet (`system`, `anonymous`) is `{ id }` alone, so rules are written
 positively: undefined denies.
@@ -992,7 +992,7 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 13 steps: privacy, override, live revocation, draft/publish, audiences, guests, invites
+pnpm service:smoke # 13 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites
 ```
 
 ### The workspace as a platform

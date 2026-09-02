@@ -5,7 +5,7 @@
  * every request re-verifies.
  *
  * Who gets through, and as whom (the cell's policy decides everything after):
- *   /w/:org/api/*, /w/:org/apps/*   members (with their role), guests (signed in, not a member),
+ *   /w/:org/api/*, /w/:org/apps/*   members (with their role), app users (signed in, not a member),
  *                                   and anonymous (not signed in) — public apps need them
  *   /w/:org/mcp                     members only: the developer surface is not for visitors
  */

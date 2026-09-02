@@ -277,7 +277,7 @@ export const Schema = {
 
   /**
    * §4.8 — a string that may only be one of these values:
-   * `Schema.oneOf("admin", "member", "guest")` types as the literal union and
+   * `Schema.oneOf("admin", "member", "appUser")` types as the literal union and
    * REJECTS anything else on write, both sides. The values are shape (they feed
    * the schema hash), so adding one is a generation change — which is what you
    * want when readers switch on the value.

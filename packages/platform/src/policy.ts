@@ -5,14 +5,20 @@
  * (`platformUserFields`).
  *
  * Who may do what, in one place:
- *   members (admin, member)   develop: read and write every app's drafts, publish, change audiences
- *   guests (signed in, not a member)   OPEN apps whose audience admits them — nothing else
- *   anonymous (not signed in)          open PUBLIC apps — nothing else
+ *   admins                         everything, every app
+ *   members                        develop the apps they may open: drafts, publish, audiences, invites
+ *   app users (signed in, no membership)   OPEN apps whose audience admits them — nothing else
+ *   anonymous (not signed in)      open PUBLIC apps — nothing else
  *
- * "May open the app" is the App's read rule; serving resolves the app through
- * the policy filter, so there is no second access-control system. Releases and
- * their files inherit it by traversing to their app — a guest who may open an
- * app may read exactly the files its live release serves.
+ * `audience` decides who may open an app: `members` — every member; `invited` —
+ * only the emails listed in `invited`, member or app user alike (an app for
+ * SOME members is the same mechanism as an app for outsiders); `public` —
+ * anyone. Admins always may. "May open the app" is the App's read rule; serving
+ * resolves the app through the policy filter, so there is no second
+ * access-control system. Drafts, releases and their files inherit it by
+ * traversing to their app — an app user who may open an app may read exactly
+ * the files its live release serves, and a member develops only the apps they
+ * may open.
  *
  * Immutability is POLICY, not mechanism: `Release` and `ReleaseFile` have
  * update/delete rules that never grant. Rollback is publishing again (or
@@ -38,9 +44,10 @@ export function platformPolicies<U extends EntityDef & PlatformUserFields>(
   const isMember = (actor: Actor): boolean => actor.role === "admin" || actor.role === "member";
   const mayOpen = (actor: Actor, app: Audience | undefined): boolean =>
     app !== undefined &&
-    (isMember(actor) ||
-      app.audience === "public" ||
-      (app.audience === "invited" && actor.email !== undefined && app.invited?.includes(actor.email) === true));
+    (actor.role === "admin" ||
+      (app.audience === "members" && isMember(actor)) ||
+      (app.audience === "invited" && actor.email !== undefined && app.invited?.includes(actor.email) === true) ||
+      app.audience === "public");
   const never = () => false;
 
   return {
@@ -52,10 +59,12 @@ export function platformPolicies<U extends EntityDef & PlatformUserFields>(
       delete: (ctx) => isMember(ctx.actor),
     }),
     draftFile: Policy.from(entities.draftFile, {
-      read: (ctx) => isMember(ctx.actor), // drafts are the workbench — members only, view-source included
-      create: (ctx) => isMember(ctx.actor),
-      update: (ctx) => isMember(ctx.actor),
-      delete: (ctx) => isMember(ctx.actor),
+      // The workbench: members who may open the app, view-source included.
+      fields: { app: { audience: true, invited: true } },
+      read: (ctx) => isMember(ctx.actor) && mayOpen(ctx.actor, ctx.fields.app),
+      create: (ctx) => isMember(ctx.actor) && mayOpen(ctx.actor, ctx.fields.app),
+      update: (ctx) => isMember(ctx.actor) && mayOpen(ctx.actor, ctx.fields.app),
+      delete: (ctx) => isMember(ctx.actor) && mayOpen(ctx.actor, ctx.fields.app),
     }),
     release: Policy.from(entities.release, {
       fields: { app: { audience: true, invited: true } },

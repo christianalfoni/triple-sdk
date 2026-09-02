@@ -14,7 +14,7 @@ import { Schema } from "../shared/schema.ts";
 
 const User = Schema.from({
   name: Schema.string(),
-  role: Schema.oneOf("admin", "member", "guest"),
+  role: Schema.oneOf("admin", "member", "appUser"),
 });
 const Team = Schema.from({
   name: Schema.string(),

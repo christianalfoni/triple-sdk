@@ -24,11 +24,11 @@ import { Schema, type AppSchema, type EntityDef, type FieldBuilder } from "tripl
  * `role` is the actor's standing in the workspace, MIRRORED from the identity
  * provider at the edge boundary and never written by a client (the workspace
  * policy must forbid it): `admin` and `member` are organization members,
- * `guest` is anyone signed in who is not — an app's user. `email` is how an
+ * `appUser` is anyone signed in who is not — an app's user. `email` is how an
  * invite finds its person before they have ever signed in.
  */
 export const platformUserFields = {
-  role: Schema.oneOf("admin", "member", "guest"),
+  role: Schema.oneOf("admin", "member", "appUser"),
   email: Schema.string().optional(),
 };
 export type PlatformUserFields = typeof platformUserFields;
@@ -42,12 +42,12 @@ export type AppFields<U extends EntityDef> = {
   /** What members see. Absent until the first publish; repointing it IS rollback. */
   live: FieldBuilder<"ref", false, true, ReleaseFields<U>>;
   /**
-   * Who may OPEN the app. Members always may. `invited`: also guests whose
+   * Who may OPEN the app. Members always may. `invited`: also app users whose
    * email is in `invited`. `public`: anyone, signed in or not. The App's read
    * rule is the access control — serving resolves the app through it.
    */
   audience: FieldBuilder<"string", false, false, never, "members" | "invited" | "public">;
-  /** Emails of the guests admitted when `audience` is "invited". */
+  /** Emails of the app users admitted when `audience` is "invited". */
   invited: FieldBuilder<"string", true, false>;
 };
 

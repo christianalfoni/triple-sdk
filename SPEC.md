@@ -233,7 +233,7 @@ full-store walk.
 ### 4.8 `oneOf` — a string with a closed set of values
 
 ```ts
-role: Schema.oneOf("admin", "member", "guest")   // types as "admin" | "member" | "guest"
+role: Schema.oneOf("admin", "member", "appUser")   // types as "admin" | "member" | "appUser"
 ```
 
 A `oneOf` is a string field whose legal values are enumerated. The values are

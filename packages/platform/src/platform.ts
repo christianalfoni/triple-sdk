@@ -124,7 +124,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     });
   }
 
-  /** Who may open the app: "members" (default), "invited" (+ listed guests), "public" (anyone). */
+  /** Who may open the app: "members" (default), "invited" (+ listed app users), "public" (anyone). */
   function setAudience(actor: string, appName: string, audience: "members" | "invited" | "public"): void {
     const app = appByName(actor, appName);
     if (!app) throw new Error(`no app "${appName}"`);
@@ -133,7 +133,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     });
   }
 
-  /** Admit one guest, by email — matched against the email the identity provider verified. */
+  /** Admit one app user, by email — matched against the email the identity provider verified. */
   function inviteToApp(actor: string, appName: string, email: string): { invited: readonly string[] } {
     const app = appByName(actor, appName);
     if (!app) throw new Error(`no app "${appName}"`);
