@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "app-schema": "workspace:*",
-    "triple-sdk": "workspace:*"
+    "triple-sdk": "workspace:*",
+    "workspace-platform": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260830.1",

@@ -1,9 +1,13 @@
 /**
  * The implicit index.html every app gets unless it writes its own: Tailwind,
  * an import map wiring the SDK (ONE bundle — one module instance, so
- * `instanceof` and identity hold), the workspace schema module, and Preact
- * with `htm` — components in plain JavaScript, no build step anywhere.
+ * `instanceof` and the Schema registry hold), the workspace schema module, and
+ * Preact with `htm` — components in plain JavaScript, no build step anywhere.
  * `react` maps to preact/compat, so triple-sdk/react's hooks work unchanged.
+ *
+ * `/platform/sdk.js` and `/platform/schema.js` are root-absolute: they are
+ * platform infrastructure served as static assets by the edge, built once at
+ * deploy (`pnpm --filter worker platform:build`), not per-workspace data.
  */
 export function shell(app: string): string {
   return `<!doctype html>

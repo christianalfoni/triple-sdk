@@ -945,7 +945,8 @@ A pnpm monorepo: the SDK, and a real service built on it.
 |---|---|
 | [`packages/sdk`](packages/sdk) | **triple-sdk** — every mechanism above, plus its demo and test harness (`smoke`, `invariant`, `bench`, `hooks`) |
 | [`packages/schema`](packages/schema) | the service's shared SHAPE — the §10.1 trust boundary as a package boundary |
-| [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets — and an MCP endpoint per workspace where coding agents deploy apps by writing files |
+| [`packages/worker`](packages/worker) | the whole backend, one `wrangler deploy`: edge auth (WorkOS AuthKit, WebCrypto, zero deps) + membership gate + a Durable Object cell per workspace, serving the app's static assets |
+| [`packages/platform`](packages/platform) | **workspace-platform** — apps as data: an MCP endpoint per workspace where coding agents write drafts and publish releases, all entities under the workspace's own policy ([its README](packages/platform/README.md) documents the protocol) |
 | [`packages/app`](packages/app) | the React app: private todos, a shared board, live presence — `useQuery`/`useTransaction` all the way down |
 
 ```
@@ -977,13 +978,15 @@ pnpm service:smoke # 7 steps of privacy, override, rejection, live revocation
 ### The workspace as a platform
 
 Each workspace cell also speaks [MCP](https://modelcontextprotocol.io) — a
-coding agent connects to `/w/<workspace>/mcp` and gets `get_schema`,
-`write_file`, and a permission-filtered `query`. Writing a file IS deployment:
-apps are plain ES modules served at `/w/<workspace>/apps/<app>/` under an
-implicit shell (Tailwind + an import map that resolves `triple-sdk/*`,
-`schema`, and `htm/preact` — React maps to preact/compat, so the SDK's hooks
-run without a build step). Apps are pure clients: they hit the same `/api` as
-everything else, as the signed-in viewer, under the same policy.
+coding agent connects to `/w/<workspace>/mcp`, reads the schema, writes
+**draft** files, and **publishes**. Apps, drafts and releases are entities in
+the workspace schema itself, so a publish is a transaction, releases are
+immutable by policy, and a running app learns about its new version through an
+ordinary `useQuery`. Apps are plain ES modules served under an implicit shell
+(Tailwind + an import map — no build step), and they are pure clients: they
+hit the same `/api` as everything else, as the signed-in viewer, under the
+same policy. The protocol, the model and the trade-offs are in
+[`packages/platform/README.md`](packages/platform/README.md).
 
 Try it locally (no WorkOS needed — `packages/worker/.dev.vars` sets `DEV_AUTH=1`):
 
@@ -993,4 +996,4 @@ pnpm service:dev                  # then, once up: pnpm --filter worker seed
 ```
 
 Point an MCP client at `http://localhost:8787/w/org_dev/mcp`, ask it to build
-an app, and open the URL `write_file` returns.
+an app, and open the URL `publish` returns.

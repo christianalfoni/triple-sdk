@@ -6,7 +6,19 @@
 // visibility change the engine can see — unsharing arrives at other members as
 // a live removal (§10.6), and at offline members via repair on reconnect.
 import { Policy } from "triple-sdk/server/policy";
-import { schema, Todo, User } from "app-schema";
+import { platformPolicies } from "workspace-platform/policy";
+import { platform, schema, Todo, User } from "app-schema";
+
+/**
+ * The rules below, in prose, for the MCP `get_schema` tool — policies are
+ * lambdas and cannot describe themselves, so this is kept next to them.
+ */
+export const accessRules = [
+  "Todos are PRIVATE to their owner unless shared=true (then every member sees them);",
+  "only the owner writes, except `completed`, which anyone who can see the todo may toggle.",
+  "Creating a todo: set owner to the viewer — tx.create(Todo, { …, owner: { id: me.actor } }).",
+  "Users: everyone reads, only you write yours.",
+].join("\n");
 
 export const userPolicy = Policy.from(User, {
   read: () => true, // names are visible to fellow members (the edge gated entry)
@@ -30,4 +42,8 @@ export const todoPolicy = Policy.from(Todo, {
   },
 });
 
-export const policy = Policy.build(schema, { user: userPolicy, todo: todoPolicy });
+export const policy = Policy.build(schema, {
+  user: userPolicy,
+  todo: todoPolicy,
+  ...platformPolicies(platform),
+});

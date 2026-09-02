@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts" },
-  "dependencies": { "triple-sdk": "workspace:*" },
+  "dependencies": { "triple-sdk": "workspace:*", "workspace-platform": "workspace:*" },
   "scripts": { "typecheck": "tsc --noEmit" },
   "devDependencies": { "typescript": "^5.9.3" }
 }

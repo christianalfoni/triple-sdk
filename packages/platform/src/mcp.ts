@@ -1,0 +1,261 @@
+/**
+ * The MCP endpoint — the platform's developer surface, per workspace cell:
+ * hand-rolled JSON-RPC over stateless streamable HTTP (~zero deps, in the
+ * repo's spirit). Files are the interface — every coding agent already knows
+ * how to develop against a filesystem — so write_file is the deploy pipeline
+ * and publish is the release button. Every tool runs AS the authenticated
+ * member: reads are permission-filtered, writes are policy-checked, exactly
+ * like an app's.
+ *
+ * The protocol itself is documented in ../README.md.
+ */
+import { Query } from "triple-sdk/query";
+import type { EntityDef } from "triple-sdk/schema";
+import type { Platform } from "./platform.ts";
+
+type Rpc = { jsonrpc: "2.0"; id?: number | string; method: string; params?: Record<string, unknown> };
+
+export type McpOptions = {
+  platform: Platform;
+  /** The verified member this request acts as. */
+  actor: string;
+  /** Where this workspace's apps are served: `${appBase}/<name>/` (live) and `${appBase}/<name>/draft/`. */
+  appBase: string;
+  /** The workspace's access rules in prose — policies are lambdas and cannot describe themselves. */
+  accessRules: string;
+};
+
+const TOOLS = [
+  {
+    name: "get_schema",
+    description:
+      "The workspace's entities and fields, its access rules, and how apps are built, served and published. Read this first.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_apps",
+    description: "Every app in this workspace, with its live version (null = never published).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_files",
+    description: "The draft files of one app.",
+    inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
+  },
+  {
+    name: "read_file",
+    description: "Read one draft file.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string" }, path: { type: "string" } },
+      required: ["app", "path"],
+    },
+  },
+  {
+    name: "write_file",
+    description:
+      "Create or replace one DRAFT file — live immediately on the app's draft URL; members keep seeing the last published release until you `publish`. " +
+      "Apps get an implicit index.html (Tailwind + import map + <div id=root> + ./app.js) unless you write your own. " +
+      "Write plain-JS ES modules; components via `import { html, render } from 'htm/preact'`.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string" }, path: { type: "string" }, content: { type: "string" } },
+      required: ["app", "path", "content"],
+    },
+  },
+  {
+    name: "delete_file",
+    description: "Delete one draft file.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string" }, path: { type: "string" } },
+      required: ["app", "path"],
+    },
+  },
+  {
+    name: "publish",
+    description:
+      "Snapshot the app's drafts as the next release and point the live URL at it — one atomic transaction. " +
+      "Releases are immutable; rollback is publishing again. Running apps that watch their App row see the new version live.",
+    inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
+  },
+  {
+    name: "query",
+    description:
+      "Query live workspace data AS YOU — the same permission-filtered rows an app would see. " +
+      'Example: {"entity":"todo","where":{"shared":true},"select":["text","completed","owner"]}',
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity: { type: "string", description: "Entity name from get_schema." },
+        where: {
+          type: "object",
+          description:
+            "field → required value; at least one (there is no whole-entity scan). An array value means any-of. Ref fields take an id string.",
+        },
+        select: {
+          type: "array",
+          items: { type: "string" },
+          description: "Field names to return (default: all fields).",
+        },
+      },
+      required: ["entity"],
+    },
+  },
+];
+
+export async function handleMcp(request: Request, options: McpOptions): Promise<Response> {
+  const { platform, actor, appBase, accessRules } = options;
+  if (request.method !== "POST") return new Response("MCP speaks POST", { status: 405 });
+  const rpc = (await request.json()) as Rpc;
+
+  const respond = (result: unknown): Response =>
+    new Response(JSON.stringify({ jsonrpc: "2.0", id: rpc.id ?? null, result }), {
+      headers: { "content-type": "application/json" },
+    });
+  const text = (value: unknown): unknown => ({
+    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+  });
+  const validName = (app: string | undefined, path?: string): string | null => {
+    if (!app || !/^[\w-]+$/.test(app) || app === "draft") return "app must match [A-Za-z0-9_-]+ (and not be 'draft')";
+    if (path !== undefined && (!/^[\w./-]+$/.test(path) || path.includes("..") || path.startsWith("draft/"))) {
+      return "path must be a simple relative path (no '..', not under 'draft/')";
+    }
+    return null;
+  };
+
+  switch (rpc.method) {
+    case "initialize":
+      return respond({
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "workspace-platform", version: "0.2.0" },
+      });
+    case "notifications/initialized":
+      return new Response(null, { status: 202 });
+    case "ping":
+      return respond({});
+    case "tools/list":
+      return respond({ tools: TOOLS });
+    case "tools/call": {
+      const name = rpc.params?.name as string;
+      const args = (rpc.params?.arguments ?? {}) as Record<string, string> & {
+        where?: Record<string, unknown>;
+        select?: string[];
+      };
+      try {
+        switch (name) {
+          case "get_schema":
+            return respond(text(describeWorkspace(platform, appBase, accessRules)));
+          case "list_apps":
+            return respond(
+              text(platform.apps(actor).map((app) => ({ name: app.name, live: app.live?.version ?? null }))),
+            );
+          case "list_files": {
+            const app = platform.appByName(actor, args.app!);
+            return respond(text(app ? platform.drafts(actor, app).map((file) => file.path) : []));
+          }
+          case "read_file": {
+            const app = platform.appByName(actor, args.app!);
+            const file = app ? platform.draft(actor, app, args.path!) : undefined;
+            return respond(text(file?.content ?? `(no such draft file: ${args.app}/${args.path})`));
+          }
+          case "write_file": {
+            const problem = validName(args.app, args.path);
+            if (problem) return respond(text(`error: ${problem}`));
+            platform.writeDraft(actor, args.app!, args.path!, args.content!);
+            return respond(
+              text({
+                draft: `${appBase}/${args.app}/draft/`,
+                note: "live URL unchanged until you publish",
+              }),
+            );
+          }
+          case "delete_file":
+            return respond(text({ deleted: platform.deleteDraft(actor, args.app!, args.path!) }));
+          case "publish": {
+            const problem = validName(args.app);
+            if (problem) return respond(text(`error: ${problem}`));
+            const { version } = platform.publish(actor, args.app!);
+            return respond(text({ version, url: `${appBase}/${args.app}/` }));
+          }
+          case "query":
+            return respond(text(runQueryTool(platform, actor, args)));
+          default:
+            return respond(text(`unknown tool: ${name}`));
+        }
+      } catch (cause) {
+        return respond({
+          content: [{ type: "text", text: `error: ${(cause as Error).message}` }],
+          isError: true,
+        });
+      }
+    }
+    default:
+      return respond({});
+  }
+}
+
+/**
+ * The query tool speaks the SCHEMA's vocabulary — entity, field, value — and
+ * lets the real Query builder assemble the payload. The wire format never
+ * surfaces; an agent needs to know the workspace, not the protocol.
+ */
+function runQueryTool(
+  platform: Platform,
+  actor: string,
+  args: { entity?: string; where?: Record<string, unknown>; select?: string[] },
+): unknown {
+  const entities = platform.schema.entities as Record<string, EntityDef>;
+  const entity = entities[args.entity ?? ""];
+  if (!entity) return `error: no entity "${args.entity}" — one of: ${Object.keys(entities).join(", ")}`;
+  let query = Query.from(entity);
+  for (const [field, raw] of Object.entries(args.where ?? {})) {
+    const builder = entity[field];
+    if (!builder) return `error: "${args.entity}" has no field "${field}"`;
+    // Refs travel as {id} — accept the bare id string agents naturally send.
+    const asValue = (value: unknown): unknown =>
+      builder.field.type === "ref" && typeof value === "string" ? { id: value } : value;
+    const value = Array.isArray(raw) ? raw.map(asValue) : asValue(raw);
+    query = query.where(field as never, value as never);
+  }
+  const names = args.select ?? Object.keys(entity);
+  const selected = query.select(Object.fromEntries(names.map((name) => [name, true])) as never);
+  return platform.queryAs(actor, selected);
+}
+
+function describeWorkspace(platform: Platform, appBase: string, accessRules: string): string {
+  const { schema } = platform;
+  const entities = Object.entries(schema.entities)
+    .map(([name, fields]) => {
+      const lines = Object.entries(fields).map(([field, builder]) => {
+        const f = builder.field;
+        const type = Array.isArray(f.type) ? f.type.join("|") : f.type;
+        return `    ${field}: ${type}${f.multiple ? "[]" : ""}${f.optional ? "?" : ""}`;
+      });
+      return `  ${name}:\n${lines.join("\n")}`;
+    })
+    .join("\n");
+  return [
+    `Workspace schema (generation ${schema.hash}):`,
+    entities,
+    "",
+    "Access rules:",
+    accessRules,
+    "Apps, drafts: any member reads and writes. Releases: immutable, never deleted.",
+    "",
+    "Building apps:",
+    `- write_file edits DRAFTS, served immediately at ${appBase}/<app>/draft/`,
+    `- publish snapshots the drafts as release N and serves it at ${appBase}/<app>/ — members see only releases`,
+    "- implicit index.html: Tailwind + import map + <div id=root> + ./app.js (write your own to override)",
+    "- plain-JS ES modules; components: import { html, render } from 'htm/preact'",
+    "- hooks: import { createHooks } from 'triple-sdk/react' (react maps to preact/compat)",
+    "- data: import { TripleClient, HttpTransport } from 'triple-sdk/client';",
+    "        import { Query } from 'triple-sdk/query'; import { schema, App, Todo, User } from 'schema';",
+    "- the api base from inside an app (draft or live): location.pathname.replace(/\\/apps\\/.*$/, '/api')",
+    "- identity: await (await fetch('/api/me')).json() → { actor, name }; auth is ambient (cookies)",
+    "- every query (app or tool) needs at least one where — there is no whole-entity scan",
+    "- your own version, live: useQuery(() => Query.from(App).where('name', '<app>').select({ live: { version: true } }), [])",
+    "  — re-renders when someone publishes; show 'new version, refresh' from it",
+  ].join("\n");
+}

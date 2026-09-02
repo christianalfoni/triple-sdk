@@ -34,13 +34,26 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^7.0.0
-        version: 7.3.6(@types/node@22.20.1)(tsx@4.23.13)
+        version: 7.3.6(@types/node@24.13.3)(tsx@4.23.13)
+
+  packages/platform:
+    dependencies:
+      triple-sdk:
+        specifier: workspace:*
+        version: link:../sdk
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   packages/schema:
     dependencies:
       triple-sdk:
         specifier: workspace:*
         version: link:../sdk
+      workspace-platform:
+        specifier: workspace:*
+        version: link:../platform
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -94,6 +107,9 @@ importers:
       triple-sdk:
         specifier: workspace:*
         version: link:../sdk
+      workspace-platform:
+        specifier: workspace:*
+        version: link:../platform
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20260830.1
@@ -2211,7 +2227,7 @@ snapshots:
       fsevents: 2.3.3
       tsx: 4.23.13
 
-  vite@7.3.6(@types/node@22.20.1)(tsx@4.23.13):
+  vite@7.3.6(@types/node@24.13.3)(tsx@4.23.13):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.7)
@@ -2220,7 +2236,7 @@ snapshots:
       rollup: 4.63.1
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.3
       fsevents: 2.3.3
       tsx: 4.23.13
 

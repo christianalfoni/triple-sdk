@@ -9,7 +9,7 @@
  */
 import { HttpTransport, TripleClient } from "triple-sdk/client";
 import { Query } from "triple-sdk/query";
-import { schema, Todo } from "app-schema";
+import { App, schema, Todo } from "app-schema";
 
 const base = process.env.SMOKE_URL ?? "http://localhost:8787";
 const org = `org_smoke_${Math.floor(Math.random() * 1e6)}`;
@@ -98,6 +98,56 @@ log("live revocation", "alice unshares → the todo VANISHES from bob's board");
 // -- and alice still has it, privately.
 if (aliceAll.data.length !== 2) fail("alice lost her todo on unshare");
 log("still hers", `alice keeps both todos; shared flags: ${JSON.stringify(aliceAll.data.map((t) => t.shared))}`);
+
+// -- THE PLATFORM: apps are data. An agent writes a draft over MCP, members see
+//    nothing until publish, and a running app learns about a new version LIVE —
+//    the registry row is just another entity under just another policy.
+const mcp = async (actor: string, name: string, tool: string, args: object): Promise<string> => {
+  const response = await fetch(`${base}/w/${org}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "x-actor": actor,
+      "x-actor-name": name,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
+  });
+  const { result } = (await response.json()) as { result: { content: { text: string }[]; isError?: boolean } };
+  if (result.isError) fail(`mcp ${tool}: ${result.content[0]!.text}`);
+  return result.content[0]!.text;
+};
+const appUrl = `${base}/w/${org}/apps/hello`;
+const get = async (path: string) => {
+  const response = await fetch(`${appUrl}${path}`, { headers: { "x-actor": "user_bob" } });
+  return { status: response.status, body: await response.text() };
+};
+
+// bob's running app watches its own registry row — the "new version, refresh" story
+const registry = bob.watch(Query.from(App).where("name", "hello").select({ live: { version: true } }));
+
+await mcp("user_alice", "Alice", "write_file", { app: "hello", path: "app.js", content: "root.textContent = 'v1'" });
+const draft = await get("/draft/app.js");
+const liveBefore = await get("/");
+if (draft.status !== 200 || !draft.body.includes("v1")) fail(`draft not served: ${draft.status}`);
+if (liveBefore.status !== 404) fail(`live served before publish: ${liveBefore.status}`);
+log("draft channel", "write_file over MCP → draft serves v1 · live is 404 until publish");
+
+const first = JSON.parse(await mcp("user_alice", "Alice", "publish", { app: "hello" })) as { version: number };
+const liveAfter = await get("/app.js");
+if (first.version !== 1 || liveAfter.status !== 200 || !liveAfter.body.includes("v1")) fail("publish did not go live");
+log("publish", `release ${first.version} → live serves v1 · immutable, any member may read it`);
+
+await mcp("user_alice", "Alice", "write_file", { app: "hello", path: "app.js", content: "root.textContent = 'v2'" });
+if (!(await get("/app.js")).body.includes("v1")) fail("live changed without a publish");
+if (!(await get("/draft/app.js")).body.includes("v2")) fail("draft did not take the edit");
+await mcp("user_alice", "Alice", "publish", { app: "hello" });
+const versionDeadline = Date.now() + 3000;
+while (registry.data[0]?.live?.version !== 2 && Date.now() < versionDeadline) await settle();
+if (registry.data[0]?.live?.version !== 2) {
+  fail(`bob's registry query did not see version 2: ${JSON.stringify(registry.data)}`);
+}
+log("live version", "a draft edit leaves live alone · publish 2 → bob's running query sees live.version 2");
 
 console.log("service smoke: all green");
 process.exit(0);

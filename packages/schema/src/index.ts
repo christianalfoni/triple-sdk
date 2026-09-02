@@ -6,8 +6,13 @@
  * The product bet: every todo is PRIVATE to its owner unless `shared` — and
  * flipping `shared` off is a live revocation (§10.6): other members watch it
  * vanish in real time.
+ *
+ * The platform's entities (apps, drafts, releases) ride in the same registry:
+ * an app deployed to this workspace is data under this schema, so a launcher
+ * can list apps and an editor can watch drafts with an ordinary useQuery.
  */
 import { Schema } from "triple-sdk/schema";
+import { platformEntities } from "workspace-platform/schema";
 
 export const User = Schema.from({
   name: Schema.string(),
@@ -25,4 +30,10 @@ export const Todo = Schema.from({
   tags: Schema.string().multiple(),
 });
 
-export const schema = Schema.build({ user: User, todo: Todo });
+export const platform = platformEntities(User);
+export const App = platform.app;
+export const DraftFile = platform.draftFile;
+export const Release = platform.release;
+export const ReleaseFile = platform.releaseFile;
+
+export const schema = Schema.build({ user: User, todo: Todo, ...platform });
