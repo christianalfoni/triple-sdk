@@ -21,6 +21,7 @@ import { policy } from "./server/policy.ts";
 import { Team, Todo, User, schema as appSchema } from "./shared/schema.ts";
 import { TripleClient } from "../sdk/client/client.ts";
 import type { Transport } from "../sdk/client/transport.ts";
+import type { DeltaMessage } from "../sdk/shared/protocol.ts";
 
 // Deterministic PRNG so a failure is reproducible.
 let seed = 42;
@@ -165,6 +166,34 @@ for (const ext of ["", "-wal", "-shm"]) rmSync(dbPath + ext, { force: true });
     process.exit(1);
   }
   console.log(`  lazy    person↔dog cycle: hash ${cyclic.hash} · person→dog→human→"${round}" ✓`);
+}
+
+// §7.7 — an invisible commit still moves every subscriber's cursor, as an
+// empty envelope — but the envelope names no author: who wrote something you
+// cannot see is not yours to know either.
+{
+  const server = new TripleServer({ schema: appSchema, policy });
+  const received: DeltaMessage[] = [];
+  server.subscribe("user_outsider", (message) => {
+    if (message.kind === "delta") received.push(message);
+  });
+  const secret = server.transaction();
+  secret.edit(Todo, "todo_secret").text = "mine alone";
+  secret.edit(Todo, "todo_secret").completed = false;
+  secret.edit(Todo, "todo_secret").owner = { id: "user_owner" };
+  server.commit(secret, "user_owner");
+  const envelope = received[0];
+  const versionOnly =
+    envelope !== undefined &&
+    envelope.version === server.storage.version &&
+    envelope.actor === undefined &&
+    envelope.delta.added.length === 0 &&
+    envelope.delta.removed.length === 0;
+  if (!versionOnly) {
+    console.error(`  envelope: expected version-only, got ${JSON.stringify(envelope)}`);
+    process.exit(1);
+  }
+  console.log(`  envelope an invisible commit arrives as v${envelope.version} with no triples and no author ✓`);
 }
 
 // §7.6 — a root must be WHOLE for what the query reads. A partial cache holding

@@ -82,11 +82,17 @@ export type RejectMessage = {
  * about removals of what you COULD see, additions of what you CAN see.
  *
  * `version` is the dedupe cursor: a client skips any delta at or below its own.
+ *
+ * A commit you may see NOTHING of still arrives — as an empty delta carrying
+ * only its version, so every subscriber walks the same log positions and
+ * "behind" stays one number for everyone. That envelope names no `actor`:
+ * who wrote something you cannot see is not yours to know either.
  */
 export type DeltaMessage = {
   kind: "delta";
   version: number;
-  actor: Id;
+  /** Absent when nothing in `delta` was visible to you. */
+  actor?: Id;
   delta: Delta;
 };
 

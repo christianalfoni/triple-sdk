@@ -30,7 +30,7 @@ import type {
   TransactMessage,
 } from "../shared/protocol.ts";
 import { withDelta } from "../shared/store.ts";
-import type { Delta, Readable, Triple } from "../shared/types.ts";
+import { isEmptyDelta, type Delta, type Readable, type Triple } from "../shared/types.ts";
 import { tripleKey } from "../shared/value.ts";
 
 export type TripleServerOptions = {
@@ -255,16 +255,17 @@ export class TripleServer {
         ? createReadFilter(this.storage, this.policy, actor)
         : undefined;
       for (const entry of entries) {
+        const visible = canRead
+          ? {
+              added: entry.delta.added.filter(canRead),
+              removed: entry.delta.removed.filter(canRead),
+            }
+          : entry.delta;
         send({
           kind: "delta",
           version: entry.version,
-          actor: entry.actor,
-          delta: canRead
-            ? {
-                added: entry.delta.added.filter(canRead),
-                removed: entry.delta.removed.filter(canRead),
-              }
-            : entry.delta,
+          ...(isEmptyDelta(visible) ? {} : { actor: entry.actor }),
+          delta: visible,
         });
       }
 
@@ -524,7 +525,14 @@ export class TripleServer {
 
   #send(outgoing: [Subscriber, Delta][], version: number, actor: Id): void {
     for (const [subscriber, visible] of outgoing) {
-      subscriber.send({ kind: "delta", version, actor, delta: visible });
+      // An invisible commit still moves the cursor — but names no author: who
+      // wrote something you cannot see is not yours to know either.
+      subscriber.send({
+        kind: "delta",
+        version,
+        ...(isEmptyDelta(visible) ? {} : { actor }),
+        delta: visible,
+      });
     }
   }
 }

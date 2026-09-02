@@ -876,6 +876,13 @@ them onto SSE. A WebSocket binding, an in-process test harness, or a rigged-orde
 transport for race testing are all just different `send` functions.
 
 
+The version is a position in the cell's ONE log, never a count of what a
+subscriber was shown: a commit an actor may see nothing of still reaches them,
+as an empty delta carrying only its version, so every subscriber walks the same
+positions and "behind" stays one number for everyone (§7.3). That envelope
+names no `actor` — who wrote something you cannot see is not yours to know
+either. The same holds for the backlog on reconnect.
+
 Every committed delta is pushed to every subscriber — filtered to what that
 subscriber's actor may read, and computed BEFORE the delta is applied:
 

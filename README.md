@@ -574,6 +574,11 @@ visible("user_christian")  → removed: EVERY triple of todo_3 he held  (text, o
                                         — the todo leaves his world as data, no re-query
 ```
 
+A commit an actor may see *nothing* of still reaches them — as an empty delta
+carrying only its version, so every subscriber walks the same log positions and
+"behind" stays one number for everyone (§12). That envelope names no `actor`:
+who wrote something you cannot see is not yours to know either.
+
 Measured: 0.1ms to fan one write to 500 subscribers; a revocation touching a
 500-todo team reaches 500 subscribers in ~22ms. A subscriber whose buffer passes
 1MB is disconnected, not buffered forever — it reconnects with its cursor and
