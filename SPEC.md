@@ -431,7 +431,7 @@ a read" for free, and one-object-per-id — the §12 single-writer invariant as 
 runtime property. A cell deploys there by swapping the adapter and the
 transport binding; everything above §5 is unchanged — DONE in `src/do/` +
 `durable.ts`/`fetch.ts`: the unchanged 35-step smoke suite passes against
-`workerd`, and reads measure within ~15% of node+sqlite (docs/adapters.md).
+`workerd`, and reads measure within ~15% of node+sqlite (README, Measurements).
 
 ---
 
