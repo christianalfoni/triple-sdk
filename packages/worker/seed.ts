@@ -10,13 +10,21 @@ import { schema, Todo } from "app-schema";
 
 const base = process.env.SEED_URL ?? "http://localhost:8787";
 const org = process.env.SEED_ORG ?? "org_dev";
-const alice = { "x-actor": "user_alice", "x-actor-name": "Alice", "x-actor-role": "admin" };
+// Real auth: a workspace token minted in the console (SEED_TOKEN=wt_…). Dev: headers.
+const alice: Record<string, string> = process.env.SEED_TOKEN
+  ? { authorization: `Bearer ${process.env.SEED_TOKEN}` }
+  : { "x-actor": "user_alice", "x-actor-name": "Alice", "x-actor-role": "admin" };
+
+// Whoever the headers/token say we are — the todos are owned by them.
+const who = await fetch(`${base}/w/${org}/api/me`, { headers: alice });
+if (!who.ok) throw new Error(`not signed in to ${org}: ${who.status} — set SEED_TOKEN (console → agent token)`);
+const me = ((await who.json()) as { actor: string }).actor;
 
 const client = new TripleClient({ schema, transport: new HttpTransport(`${base}/w/${org}/api`, alice) });
 await client.connect();
 const outcome = await client.transact((tx) => {
-  tx.create(Todo, { text: "private: water the plants", completed: false, shared: false, owner: { id: "user_alice" }, tags: [] });
-  tx.create(Todo, { text: "shared: plan the offsite", completed: false, shared: true, owner: { id: "user_alice" }, tags: ["wave"] });
+  tx.create(Todo, { text: "private: water the plants", completed: false, shared: false, owner: { id: me }, tags: [] });
+  tx.create(Todo, { text: "shared: plan the offsite", completed: false, shared: true, owner: { id: me }, tags: ["wave"] });
 });
 console.log(`todos: ${outcome}`);
 client.disconnect();

@@ -212,7 +212,7 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
     result.user.email || result.user.id;
   const profile = await sealProfile({ name, email: result.user.email }, env);
   const headers = new Headers({ location: back });
-  const attrs = "HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=28800";
+  const attrs = `HttpOnly; ${secureAttr(request)}Path=/; SameSite=Lax; Max-Age=28800`;
   headers.append("set-cookie", `session=${result.access_token}; ${attrs}`);
   headers.append("set-cookie", `profile=${profile}; ${attrs}`);
   return new Response(null, { status: 302, headers });
@@ -221,10 +221,14 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
 export function logout(request: Request): Response {
   const headers = new Headers({ location: "/" });
   for (const name of ["session", "profile"]) {
-    headers.append("set-cookie", `${name}=; HttpOnly; Secure; Path=/; Max-Age=0`);
+    headers.append("set-cookie", `${name}=; HttpOnly; ${secureAttr(request)}Path=/; Max-Age=0`);
   }
-  void request;
   return new Response(null, { status: 302, headers });
+}
+
+/** `Secure` on https only: browsers (Safari) refuse Secure cookies over http://localhost. */
+function secureAttr(request: Request): string {
+  return new URL(request.url).protocol === "https:" ? "Secure; " : "";
 }
 
 // ---------------------------------------------------------------------------
