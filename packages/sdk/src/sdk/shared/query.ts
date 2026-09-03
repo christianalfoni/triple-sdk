@@ -783,6 +783,8 @@ function namespaceSelection(
 ): RuntimeSelection {
   const out: RuntimeSelection = {};
   for (const [field, sub] of Object.entries(selection)) {
+    // Every row carries `id`; asking for it is harmless (untyped callers do).
+    if (field === "id" && sub === true) continue;
     const builder = entity[field] as AnyFieldBuilder | undefined;
     if (!builder) {
       throw new Error(`Entity "${entityName(entity)}" has no field "${field}".`);

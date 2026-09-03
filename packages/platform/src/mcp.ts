@@ -346,6 +346,10 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "  null means nobody is signed in → auth.login() sends them to sign in and back here. auth.apiBase is this workspace's /api:",
     "  new TripleClient({ schema, transport: new HttpTransport(auth.apiBase) }). Auth is ambient — a cookie; nothing to attach.",
     "- a query with no where means EVERY instance you may see (Query.from(App).select(…)) — a scan, so lead with a where when you can",
+    "- every row has `id` already — do not select it. select({ name: true }) → { id, name }; a ref is { id }; select into it for its fields:",
+    "  select({ text: true, owner: { name: true } }) → { id, text, owner: { id, name } }. Optional fields may be undefined; multiples are arrays.",
+    "- writes: tx.create(Entity, { …every required field… }) mints the id; tx.edit(Entity, id).field = value; tx.delete(id).",
+    "  A required field is one without ? or []. Refs are written as { id }.",
     "- your own version, live: useQuery(() => Query.from(App).where('name', '<app>').select({ live: { version: true } }), [])",
     "  — re-renders when someone publishes; show 'new version, refresh' from it",
   ].join("\n");
