@@ -342,7 +342,7 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "- hooks: const { useQuery, useTransaction, usePresence } = createHooks(client)  (from 'triple-sdk/react'; react maps to preact/compat)",
     "  useQuery(() => Query.from(Todo).where(…).select(…), [deps]) → { data: rows[], status: 'loading'|'ready'|'error'|'outdated', error? }",
     "    data is [] while loading and re-renders live on every change; rows keep identity so key=${row.id} is right",
-    "  const [run, state] = useTransaction((tx, ...args) => { tx.create(…); tx.edit(…); });  run(...args); state.kind: idle|pending|committed|queued|rejected",
+    "  const [run, state] = useTransaction((tx, ...args) => { tx.create(…); tx.edit(…); });  run(...args); state.status: idle|pending|committed|queued|rejected (rejected also has state.error)",
     "  usePresence() → the ids of members online right now",
     "- data: import { TripleClient, HttpTransport } from 'triple-sdk/client';",
     "        import { Query } from 'triple-sdk/query'; import { schema, App, Todo, User } from 'schema';",
