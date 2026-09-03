@@ -153,8 +153,21 @@ accept: application/json, text/event-stream
 claude mcp add --transport http workspace https://…/w/<workspace>/mcp --header "Authorization: Bearer wt_…"
 ```
 
-(The MCP specification's own OAuth 2.1 flow, with AuthKit as the authorization
-server, is the eventual replacement; it ends at the same actor headers.)
+**From a chat — the service as one connector.** claude.ai's connector UI
+speaks only the MCP specification's OAuth 2.1 flow (no headers), so the edge
+also serves the whole service as **one MCP server at `/mcp`**: it publishes
+`/.well-known/oauth-protected-resource` naming the AuthKit domain as its
+authorization server, answers an unauthenticated call with `401` +
+`WWW-Authenticate: Bearer … resource_metadata="…"`, and verifies the access
+tokens AuthKit issues (signature against the AuthKit JWKS, issuer = the AuthKit
+domain, audience = the service's `/mcp`). The user adds `https://…/mcp` as a
+custom connector and signs in once; the tools are the same, plus
+`list_workspaces`, and every tool takes `workspace` (optional when they belong
+to exactly one) — the edge routes the call to that workspace's cell through
+the same actor headers. WorkOS side: *Connect → Configuration* — enable Client
+ID Metadata Documents (and Dynamic Client Registration for older clients), add
+`https://…/mcp` as a Resource Indicator and make it the default; the worker
+needs `WORKOS_AUTHKIT_DOMAIN`.
 
 | method | result |
 |---|---|

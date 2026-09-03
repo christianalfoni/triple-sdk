@@ -9,7 +9,7 @@ binding = "ASSETS"
 # Browser navigations hit the assets layer BEFORE the Worker, and the SPA
 # fallback would answer /auth/login and /w/<ws>/apps/… with the console's
 # index.html. These routes are the Worker's; everything else is a static file.
-run_worker_first = ["/auth/*", "/api/*", "/w/*"]
+run_worker_first = ["/auth/*", "/api/*", "/w/*", "/mcp", "/.well-known/*"]
 
 [[durable_objects.bindings]]
 name = "CELL"

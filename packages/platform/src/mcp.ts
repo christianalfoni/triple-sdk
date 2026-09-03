@@ -31,7 +31,8 @@ export type McpOptions = {
   inviteMember?: (email: string, role: "admin" | "member") => Promise<string>;
 };
 
-const TOOLS = [
+/** The tool list — exported so a service-level endpoint can present it with a `workspace` argument. */
+export const TOOLS = [
   {
     name: "get_schema",
     description:

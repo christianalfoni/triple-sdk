@@ -103,8 +103,12 @@ export function Workspace({ me, workspace, onLeave }: { me: Me; workspace: Works
       <section className="panel">
         <h2>Build with an agent</h2>
         <p className="muted">
-          This workspace speaks MCP. Create a token for your agent, then point it at the workspace — it reads the
-          schema, writes drafts, and publishes apps that appear above.
+          <strong>From a chat</strong> — in claude.ai, Customize → Connectors → Add custom connector, with this URL,
+          then Connect and sign in with the same account. Ask for an app; it appears above.
+        </p>
+        <pre className="code">{`${location.origin}/mcp`}</pre>
+        <p className="muted">
+          <strong>From Claude Code</strong> — a token for this workspace, thirty days:
         </p>
         {token ? (
           <pre className="code">{`claude mcp add --transport http workspace ${token.mcp} \\

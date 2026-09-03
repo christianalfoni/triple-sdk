@@ -992,7 +992,7 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 16 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens
+pnpm service:smoke # 17 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens, the service as one MCP
 pnpm console:dev   # the console on :5173, proxied to the worker
 ```
 

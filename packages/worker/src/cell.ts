@@ -55,7 +55,7 @@ export class WorkspaceCell {
       return handleMcp(request, {
         platform: this.#platform,
         actor,
-        appBase: url.pathname.replace(/\/mcp$/, "/apps"),
+        appBase: new URL(url.pathname.replace(/\/mcp$/, "/apps"), url).toString(),
         accessRules,
         inviteMember: (email, role) => inviteMember(this.#env, org, email, role),
       });

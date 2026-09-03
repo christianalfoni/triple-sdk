@@ -230,5 +230,30 @@ const fresh = await fetch(`${base}/w/${created.id}/api/me`, { headers: identity(
 if (fresh.status !== 200) fail(`the new workspace's cell did not answer: ${fresh.status}`);
 log("create workspace", `POST /api/workspaces → ${created.id} as admin · listed · its cell answers /api/me on first contact`);
 
+// -- THE SERVICE AS ONE MCP SERVER (what a claude.ai connector points at):
+//    OAuth's door knock when nobody is signed in, then the same tools with the
+//    workspace as an argument, routed to that workspace's cell.
+const knock = await fetch(`${base}/mcp`, { method: "POST", headers: { ...anonymous, "content-type": "application/json" }, body: "{}" });
+const challenge = knock.headers.get("www-authenticate") ?? "";
+const metadata = (await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json()) as { resource: string };
+if (knock.status !== 401 || !challenge.includes("resource_metadata=")) fail(`no OAuth challenge: ${knock.status} ${challenge}`);
+if (metadata.resource !== `${base}/mcp`) fail(`resource metadata: ${JSON.stringify(metadata)}`);
+const serviceCall = async (who: Record<string, string>, method: string, params?: object) =>
+  (await (await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { ...who, "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params ? { params } : {}) }),
+  })).json()) as { result: { tools?: { name: string; inputSchema: { properties: object } }[]; content?: { text: string }[]; isError?: boolean } };
+const listed2 = await serviceCall(identity("user_alice", "Alice"), "tools/list");
+const names = listed2.result.tools!.map((t) => t.name);
+if (!names.includes("list_workspaces") || !("workspace" in listed2.result.tools!.find((t) => t.name === "list_apps")!.inputSchema.properties)) fail(`service tools: ${names.join(",")}`);
+const workspaces = await serviceCall(identity("user_alice", "Alice"), "tools/call", { name: "list_workspaces", arguments: {} });
+if (!workspaces.result.content![0]!.text.includes(created.id)) fail(`list_workspaces: ${workspaces.result.content![0]!.text}`);
+const routed = await serviceCall(identity("user_alice", "Alice"), "tools/call", { name: "list_apps", arguments: { workspace: org } });
+if (routed.result.isError || !routed.result.content![0]!.text.includes("hello")) fail(`routed list_apps: ${routed.result.content![0]!.text}`);
+const ambiguous = await serviceCall(identity("user_alice", "Alice"), "tools/call", { name: "list_apps", arguments: {} });
+if (!ambiguous.result.isError || !ambiguous.result.content![0]!.text.includes("which workspace")) fail(`ambiguous workspace: ${ambiguous.result.content![0]!.text}`);
+log("service mcp", `/mcp knocks back 401 + resource_metadata · metadata names ${metadata.resource} · list_workspaces → ${created.id} · list_apps routed to ${org} · omitted workspace with several → asks`);
+
 console.log("service smoke: all green");
 process.exit(0);

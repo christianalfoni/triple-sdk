@@ -6,3 +6,4 @@ DEV_AUTH=1
 #WORKOS_CLIENT_ID=client_...        the application's client id (Applications page)
 #WORKOS_API_KEY=sk_...              the environment's secret key (API Keys page) — same environment as the client id
 #WORKOS_CLIENT_SECRET=...           only if the Applications page shows a separate client secret for the app
+#WORKOS_AUTHKIT_DOMAIN=https://....authkit.app   the AuthKit domain — the OAuth server for MCP clients (claude.ai)

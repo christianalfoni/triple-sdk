@@ -44,5 +44,5 @@ for (const app of ["todos", "members"]) {
   const content = readFileSync(new URL(`./apps/${app}/app.js`, import.meta.url), "utf8");
   await mcp("write_file", { app, path: "app.js", content });
   const published = JSON.parse(await mcp("publish", { app })) as { version: number; url: string };
-  console.log(`${app}: release ${published.version} at ${base}${published.url}`);
+  console.log(`${app}: release ${published.version} at ${published.url}`);
 }

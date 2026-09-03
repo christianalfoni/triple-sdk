@@ -6,6 +6,6 @@
  *   .          the runtime: createPlatform, the MCP endpoint, app serving
  */
 export { createPlatform, contentType, type Platform, type Served } from "./platform.ts";
-export { handleMcp, type McpOptions } from "./mcp.ts";
+export { handleMcp, TOOLS, type McpOptions } from "./mcp.ts";
 export { serveApp } from "./serve.ts";
 export { shell } from "./shell.ts";

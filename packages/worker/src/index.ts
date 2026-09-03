@@ -8,8 +8,12 @@
  *   /w/:org/api/*, /w/:org/apps/*   members (with their role), app users (signed in, not a member),
  *                                   and anonymous (not signed in) — public apps need them
  *   /w/:org/mcp                     members only: the developer surface is not for visitors
+ *   /mcp                            the SERVICE as one MCP server — what a claude.ai connector
+ *                                   points at: OAuth (AuthKit) per the MCP spec, and the
+ *                                   workspace is a tool argument. Same tools, routed to the cell.
  */
 import type { DurableObjectNamespace, Fetcher } from "@cloudflare/workers-types";
+import { TOOLS } from "workspace-platform";
 import {
   createWorkspace,
   identify,
@@ -17,10 +21,12 @@ import {
   loginCallback,
   loginRedirect,
   logout,
+  mcpResource,
   memberships,
   mintToken,
   roleIn,
   type Env as AuthEnv,
+  type Identity,
 } from "./auth.ts";
 export { WorkspaceCell } from "./cell.ts";
 
@@ -34,6 +40,17 @@ export default {
     if (path === "/auth/login") return loginRedirect(request, env);
     if (path === "/auth/callback") return loginCallback(request, env);
     if (path === "/auth/logout") return logout(request);
+
+    // RFC 9728 — how an MCP client finds the authorization server: this
+    // service is ONE OAuth resource (its /mcp), and AuthKit is its server.
+    if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") {
+      return json(200, {
+        resource: mcpResource(request),
+        authorization_servers: env.WORKOS_AUTHKIT_DOMAIN ? [env.WORKOS_AUTHKIT_DOMAIN] : [],
+        bearer_methods_supported: ["header"],
+      });
+    }
+    if (path === "/mcp") return serviceMcp(request, env);
 
     if (path === "/api/me" || path === "/api/workspaces" || path.startsWith("/w/")) {
       const identity = await identify(request, env);
@@ -108,6 +125,107 @@ export default {
     return env.ASSETS.fetch(request as never) as unknown as Promise<Response>;
   },
 };
+
+/**
+ * The service as one MCP server. A connector (claude.ai) adds ONE URL and
+ * signs in once; every workspace the member belongs to is reachable through a
+ * `workspace` argument — omitted when they belong to exactly one. Tool calls
+ * are forwarded, verbatim minus that argument, to the workspace's cell through
+ * the same header rewrite as everything else.
+ */
+async function serviceMcp(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return new Response("MCP speaks POST", { status: 405 });
+  const identity = await identify(request, env);
+  if (!identity) {
+    // The MCP spec's door knock: 401 + where to find the resource metadata.
+    const metadata = new URL("/.well-known/oauth-protected-resource", request.url).toString();
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401,
+      headers: {
+        "content-type": "application/json",
+        "www-authenticate": `Bearer error="unauthorized", error_description="Authorization needed", resource_metadata="${metadata}"`,
+      },
+    });
+  }
+  const rpc = (await request.json().catch(() => null)) as
+    | { jsonrpc: "2.0"; id?: number | string; method: string; params?: Record<string, unknown> }
+    | null;
+  if (!rpc) return json(400, { error: "expected a JSON-RPC message" });
+  const respond = (result: unknown) => json(200, { jsonrpc: "2.0", id: rpc.id ?? null, result });
+  const text = (value: unknown, isError = false) => ({
+    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+    ...(isError ? { isError: true } : {}),
+  });
+
+  switch (rpc.method) {
+    case "initialize":
+      return respond({
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "workspaces", version: "0.3.0" },
+      });
+    case "notifications/initialized":
+      return new Response(null, { status: 202 });
+    case "ping":
+      return respond({});
+    case "tools/list":
+      return respond({ tools: serviceTools() });
+    case "tools/call": {
+      const name = rpc.params?.name as string;
+      const args = { ...((rpc.params?.arguments ?? {}) as Record<string, unknown>) };
+      const mine = await memberships(identity, env);
+      if (name === "list_workspaces") return respond(text(mine));
+      const workspace = (args.workspace as string | undefined) ?? (mine.length === 1 ? mine[0]!.id : undefined);
+      delete args.workspace;
+      if (!workspace) {
+        return respond(text(`error: say which workspace — you belong to ${mine.length}: ${mine.map((w) => `${w.id} (${w.name})`).join(", ")}`, true));
+      }
+      if (identity.org && identity.org !== workspace) return respond(text("error: this token is for another workspace", true));
+      const role = await roleIn(request, identity, workspace, env);
+      if (role !== "admin" && role !== "member") return respond(text(`error: you are not a member of ${workspace}`, true));
+      const headers = new Headers({ "content-type": "application/json", accept: "application/json, text/event-stream" });
+      setActor(headers, identity, role);
+      const cell = env.CELL.get(env.CELL.idFromName(workspace));
+      const forwarded = new Request(new URL(`/w/${workspace}/mcp`, request.url).toString(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...rpc, params: { name, arguments: args } }),
+      });
+      return cell.fetch(forwarded as never) as unknown as Promise<Response>;
+    }
+    default:
+      return respond({});
+  }
+}
+
+function serviceTools(): unknown[] {
+  const workspace = {
+    type: "string",
+    description: "The workspace id (from list_workspaces). Optional when you belong to exactly one.",
+  };
+  return [
+    {
+      name: "list_workspaces",
+      description: "The workspaces you belong to, with your role in each. Every other tool takes one as `workspace`.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    ...TOOLS.map((tool) => ({
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: { workspace, ...(tool.inputSchema as { properties: object }).properties },
+      },
+    })),
+  ];
+}
+
+/** The verified identity, as the cell reads it. Never from the client. */
+function setActor(headers: Headers, identity: Identity, role: string): void {
+  headers.set("x-actor", identity.actor);
+  headers.set("x-actor-name", identity.name);
+  headers.set("x-actor-role", role);
+  if (identity.email) headers.set("x-actor-email", identity.email);
+}
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {

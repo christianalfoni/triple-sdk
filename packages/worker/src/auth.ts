@@ -15,6 +15,12 @@ export type Env = {
   WORKOS_API_KEY?: string;
   /** Only when the dashboard gives the application its OWN client secret; otherwise the API key is the secret. */
   WORKOS_CLIENT_SECRET?: string;
+  /**
+   * The AuthKit domain (https://….authkit.app): the OAuth authorization server
+   * for MCP clients such as claude.ai. Its tokens name this service's `/mcp`
+   * as their audience (a Resource Indicator registered in the dashboard).
+   */
+  WORKOS_AUTHKIT_DOMAIN?: string;
 };
 
 export type Identity = {
@@ -35,10 +41,11 @@ const WORKOS = "https://api.workos.com";
 // ---------------------------------------------------------------------------
 
 export async function identify(request: Request, env: Env): Promise<Identity | null> {
-  // An agent has no browser cookie: it carries a workspace token the console
-  // minted for a signed-in member (`POST /w/<org>/api/tokens`).
+  // No browser cookie: a bearer. Either a workspace token the console minted
+  // (`wt_…`, one workspace), or an OAuth access token AuthKit issued to an MCP
+  // client — the MCP spec's own flow, which is how claude.ai connects.
   const bearer = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
-  if (bearer) return openToken(bearer, env);
+  if (bearer) return bearer.startsWith("wt_") ? openToken(bearer, env) : identifyOAuth(bearer, request, env);
   if (env.DEV_AUTH === "1") {
     // Dev: headers stand in for WorkOS. `x-actor: anonymous` simulates "not signed in".
     const actor = request.headers.get("x-actor") ?? "user_dev";
@@ -61,6 +68,44 @@ export async function identify(request: Request, env: Env): Promise<Identity | n
     name: profile?.name ?? String(claims.sub),
     ...(profile?.email ? { email: profile.email } : {}),
   };
+}
+
+/** The OAuth resource this service is, for MCP clients: its own `/mcp`. */
+export function mcpResource(request: Request): string {
+  return new URL("/mcp", request.url).toString();
+}
+
+/**
+ * An AuthKit access token, verified the way the MCP spec's resource server
+ * verifies: signature against the AuthKit JWKS, issuer = the AuthKit domain,
+ * audience = this service's `/mcp`. The token names the user (`sub`); their
+ * profile comes from the API, cached briefly.
+ */
+async function identifyOAuth(token: string, request: Request, env: Env): Promise<Identity | null> {
+  const issuer = env.WORKOS_AUTHKIT_DOMAIN?.replace(/\/$/, "");
+  if (!issuer) return null;
+  const claims = await verifyJwtAt(`${issuer}/oauth2/jwks`, token);
+  if (!claims || claims.iss !== issuer) return null;
+  const audience = claims.aud;
+  const resource = mcpResource(request);
+  if (!(audience === resource || (Array.isArray(audience) && audience.includes(resource)))) return null;
+  const user = await profileOf(String(claims.sub), env);
+  return { actor: String(claims.sub), name: user.name, ...(user.email ? { email: user.email } : {}) };
+}
+
+const profileCache = new Map<string, { at: number; profile: { name: string; email?: string } }>();
+async function profileOf(userId: string, env: Env): Promise<{ name: string; email?: string }> {
+  const cached = profileCache.get(userId);
+  if (cached && cached.at > Date.now() - 300_000) return cached.profile;
+  const user = (await workos(env, `/user_management/users/${userId}`)) as {
+    first_name?: string; last_name?: string; email?: string;
+  };
+  const profile = {
+    name: [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email || userId,
+    ...(user.email ? { email: user.email } : {}),
+  };
+  profileCache.set(userId, { at: Date.now(), profile });
+  return profile;
 }
 
 /** Dev only: workspaces created this session, so the console can list them without WorkOS. */
@@ -242,15 +287,22 @@ function secureAttr(request: Request): string {
 // WebCrypto plumbing — RS256 JWKS verify + HMAC-sealed profile
 // ---------------------------------------------------------------------------
 
-let jwks: { keys: JsonWebKey[]; at: number } | undefined;
+/** Session tokens (the cookie) verify against the application's SSO JWKS. */
+function verifyJwt(token: string, clientId: string): Promise<Record<string, unknown> | null> {
+  return verifyJwtAt(`${WORKOS}/sso/jwks/${clientId}`, token);
+}
 
-async function verifyJwt(token: string, clientId: string): Promise<Record<string, unknown> | null> {
+const jwksCache = new Map<string, { keys: JsonWebKey[]; at: number }>();
+
+async function verifyJwtAt(jwksUrl: string, token: string): Promise<Record<string, unknown> | null> {
   const [h, p, sig] = token.split(".");
   if (!h || !p || !sig) return null;
+  let jwks = jwksCache.get(jwksUrl);
   if (!jwks || jwks.at < Date.now() - 3_600_000) {
-    const response = await fetch(`${WORKOS}/sso/jwks/${clientId}`);
+    const response = await fetch(jwksUrl);
     if (!response.ok) return null;
     jwks = { keys: ((await response.json()) as { keys: JsonWebKey[] }).keys, at: Date.now() };
+    jwksCache.set(jwksUrl, jwks);
   }
   const data = new TextEncoder().encode(`${h}.${p}`);
   const signature = b64url(sig);
