@@ -145,7 +145,28 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     return { invited: [...app.invited, ...(app.invited.includes(email) ? [] : [email])] };
   }
 
-  /** Take the app off its live URL. Releases stay — history is permanent; publish again to restore. */
+  /**
+   * Delete an app with its WHOLE history — drafts, every release and its files,
+   * the row — in one transaction, so a half-deleted app never exists. Admins
+   * only (the release policy says so); the cell's required-ref check is what
+   * forces the cascade to be complete.
+   */
+  function deleteApp(actor: string, appName: string): { drafts: number; releases: number; files: number } {
+    const app = appByName(actor, appName);
+    if (!app) throw new Error(`no app "${appName}"`);
+    const draftRows = drafts(actor, app);
+    const releases = queryAs(actor, Query.from(Release).where("app", { id: app.id }).select({ version: true }));
+    const files = releases.flatMap((release) => releaseFiles(actor, release));
+    transactAs(actor, (tx) => {
+      for (const file of files) tx.delete(file.id);
+      for (const release of releases) tx.delete(release.id);
+      for (const draft of draftRows) tx.delete(draft.id);
+      tx.delete(app.id);
+    });
+    return { drafts: draftRows.length, releases: releases.length, files: files.length };
+  }
+
+  /** Take the app off its live URL. Releases stay; publish again to restore. */
   function unpublish(actor: string, appName: string): void {
     const app = appByName(actor, appName);
     if (!app) throw new Error(`no app "${appName}"`);
@@ -238,6 +259,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     deleteDraft,
     publish,
     unpublish,
+    deleteApp,
     setAudience,
     inviteToApp,
     serve,

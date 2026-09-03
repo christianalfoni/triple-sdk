@@ -255,5 +255,13 @@ const ambiguous = await serviceCall(identity("user_alice", "Alice"), "tools/call
 if (!ambiguous.result.isError || !ambiguous.result.content![0]!.text.includes("which workspace")) fail(`ambiguous workspace: ${ambiguous.result.content![0]!.text}`);
 log("service mcp", `/mcp knocks back 401 + resource_metadata · metadata names ${metadata.resource} · list_workspaces → ${created.id} · list_apps routed to ${org} · omitted workspace with several → asks`);
 
+// -- DELETING AN APP takes its whole history, admins only, one transaction.
+const memberDelete = await mcpCall(identity("user_bob", "Bob"), "delete_app", { app: "hello" });
+if (!memberDelete.isError) fail("a member deleted an app with releases");
+const gone = JSON.parse(await mcp("user_alice", "Alice", "delete_app", { app: "hello" })) as { releases: number; files: number };
+const afterDelete = await mcp("user_alice", "Alice", "list_apps", {});
+if (gone.releases !== 2 || afterDelete.includes("hello") || (await get("/app.js")).status !== 404) fail(`delete_app: ${JSON.stringify(gone)} · ${afterDelete}`);
+log("delete app", `bob (member) is refused · alice (admin) removes ${gone.releases} releases, ${gone.files} files, the drafts and the row · live URL 404s`);
+
 console.log("service smoke: all green");
 process.exit(0);

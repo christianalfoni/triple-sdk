@@ -39,11 +39,12 @@ moves, so publish is atomic by the pointer.
 12" is a query, not a replay. Unchanged files are duplicated across releases on
 purpose — KB-scale strings in SQLite do not warrant content addressing.
 
-**Immutability is policy.** `Release` and `ReleaseFile` have `update` and
-`delete` rules that never grant; there is no frozen flag. Rollback is
-publishing again (or repointing `live`). One consequence: an app that has ever
-been published cannot be deleted — its releases reference it, and required refs
-may not dangle.
+**Immutability is policy.** `Release` and `ReleaseFile` never update, and only
+an admin may delete them — which is what `delete_app` does: drafts, releases,
+files and the row in one transaction. There is no frozen flag. Rollback is
+publishing again (or `unpublish`). Short of an admin deleting the whole app,
+history is permanent: releases reference their app, and required refs may not
+dangle.
 
 ## Who is who
 
@@ -189,6 +190,7 @@ Every tool runs **as the member** who called it.
 | `delete_file` | `app`, `path` | `{ deleted: boolean }` |
 | `publish` | `app` | `{ version, url: "…/apps/<app>/" }` |
 | `unpublish` | `app` | `{ live: null }` — the live URL 404s until the next publish; releases stay |
+| `delete_app` | `app` | admins only — the app and its whole history, one transaction; `{ drafts, releases, files }` removed |
 | `set_audience` | `app`, `audience` | `members` · `invited` · `public` — who may open it |
 | `invite_to_app` | `app`, `email` | adds an email to `invited` — a member or an outsider (the audience must be `invited`) |
 | `invite_member` | `email`, `role?` | admins only — an organization invitation from the identity provider (`inviteMember` in the wiring) |

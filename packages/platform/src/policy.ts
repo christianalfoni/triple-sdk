@@ -20,11 +20,12 @@
  * the files its live release serves, and a member develops only the apps they
  * may open.
  *
- * Immutability is POLICY, not mechanism: `Release` and `ReleaseFile` have
- * update/delete rules that never grant. Rollback is publishing again (or
- * unpublishing). A consequence: an app that has ever been published cannot be
- * deleted, because its releases reference it and required refs may not dangle
- * (§4.5) — history is permanent.
+ * Immutability is POLICY, not mechanism: `Release` and `ReleaseFile` never
+ * update, and only an ADMIN may delete them — which is what deleting an app
+ * means (delete_app: drafts, releases, files and the row, one transaction).
+ * Rollback is publishing again (or unpublishing). Short of an admin deleting
+ * the whole app, history is permanent: its releases reference it and required
+ * refs may not dangle (§4.5).
  *
  * Every rule is written POSITIVELY (`role === "member"`), never by exclusion: an
  * actor with no row yet reads `role` as undefined, and undefined must deny.
@@ -71,14 +72,14 @@ export function platformPolicies<U extends EntityDef & PlatformUserFields>(
       read: (ctx) => mayOpen(ctx.actor, ctx.fields.app),
       create: (ctx) => isMember(ctx.actor),
       update: never,
-      delete: never,
+      delete: (ctx) => ctx.actor.role === "admin", // only as part of deleting the app
     }),
     releaseFile: Policy.from(entities.releaseFile, {
       fields: { release: { app: { audience: true, invited: true } } },
       read: (ctx) => mayOpen(ctx.actor, ctx.fields.release?.app),
       create: (ctx) => isMember(ctx.actor),
       update: never,
-      delete: never,
+      delete: (ctx) => ctx.actor.role === "admin",
     }),
   };
 }

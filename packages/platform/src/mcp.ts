@@ -88,7 +88,13 @@ export const TOOLS = [
   },
   {
     name: "unpublish",
-    description: "Take the app off its live URL (404 until the next publish). Releases stay — history is permanent.",
+    description: "Take the app off its live URL (404 until the next publish). Releases stay; publish again to restore.",
+    inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
+  },
+  {
+    name: "delete_app",
+    description:
+      "Delete an app and ALL its history — drafts, every release, every file — in one transaction. Admins only. Irreversible.",
     inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] },
   },
   {
@@ -231,6 +237,11 @@ export async function handleMcp(request: Request, options: McpOptions): Promise<
           case "unpublish":
             platform.unpublish(actor, args.app!);
             return respond(text({ live: null, url: `${appBase}/${args.app}/` }));
+          case "delete_app": {
+            const problem = validName(args.app);
+            if (problem) return respond(text(`error: ${problem}`));
+            return respond(text({ deleted: args.app, ...platform.deleteApp(actor, args.app!) }));
+          }
           case "set_audience": {
             const audience = args.audience as "members" | "invited" | "public";
             if (!["members", "invited", "public"].includes(audience)) {
