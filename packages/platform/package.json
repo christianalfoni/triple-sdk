@@ -7,7 +7,15 @@
     "./schema": "./src/schema.ts",
     "./policy": "./src/policy.ts"
   },
-  "dependencies": { "triple-sdk": "workspace:*" },
-  "scripts": { "typecheck": "tsc --noEmit" },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "dependencies": {
+    "triple-sdk": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bench": "tsx bench.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.19.2"
+  }
 }

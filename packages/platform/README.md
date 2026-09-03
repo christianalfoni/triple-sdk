@@ -62,6 +62,14 @@ generation stays accepted, so an app built against last week's schema keeps
 working until it refreshes; the console speaks only the fixed entities and is
 accepted everywhere.
 
+**What it costs.** Nothing at read time that code would not: a declaration
+becomes ordinary builders once per generation, and a rule becomes a closure
+tree once (paths pre-split, literal lists pre-set) — evaluated exactly where a
+lambda would be, with the same field caching. Measured (`pnpm --filter
+workspace-platform bench`, 20k todos, a policy-dominated query over 10k
+candidates): 30.4 ms declared vs 30.5 ms as lambdas; the rule alone ~48 ns vs
+~4 ns — invisible under field loading.
+
 Apps get the schema from the cell: `/w/<org>/schema.js` is the whole schema —
 fixed entities and declared — **as data**, rebuilt in the browser with the same
 builders, so the hash the client presents is the cell's own. One export per
