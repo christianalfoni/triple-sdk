@@ -5,7 +5,8 @@
  * every request re-verifies.
  *
  * Who gets through, and as whom (the cell's policy decides everything after):
- *   /w/:org/api/*, /w/:org/apps/*   members (with their role), app users (signed in, not a member),
+ *   /w/:org/api/*, /w/:org/apps/*, /w/:org/schema.js
+ *                                   members (with their role), app users (signed in, not a member),
  *                                   and anonymous (not signed in) — public apps need them
  *   /w/:org/mcp                     members only: the developer surface is not for visitors
  *   /mcp                            the SERVICE as one MCP server — what a claude.ai connector
@@ -68,8 +69,8 @@ export default {
         return json(200, await memberships(identity, env));
       }
 
-      const match = /^\/w\/([\w-]+)\/(api\/|mcp$|apps\/)/.exec(path);
-      if (!match) return json(404, { error: "expected /w/<workspace>/{api,apps,mcp}" });
+      const match = /^\/w\/([\w-]+)\/(api\/|mcp$|apps\/|schema\.js$)/.exec(path);
+      if (!match) return json(404, { error: "expected /w/<workspace>/{api,apps,mcp,schema.js}" });
       const org = match[1]!;
       if (identity?.org && identity.org !== org) return json(403, { error: "this token is for another workspace" });
       const role = identity ? await roleIn(request, identity, org, env) : null;

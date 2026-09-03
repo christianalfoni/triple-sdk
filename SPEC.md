@@ -243,6 +243,26 @@ error, the server authoritatively. Readers switch on the literal union; the
 policy compares against it. Values must be distinct, and a `oneOf` may be
 `.optional()` or `.multiple()`, or sit inside a `Schema.object` shape.
 
+### 4.9 The schema as data — declarations
+
+```ts
+const declared = entitiesFromDeclaration({ entities: { note: { fields: { text: "string", to: { ref: "user" } } } } }, fixed);
+const schema = Schema.build({ ...fixed, ...declared });        // the same builders, the same hash
+const declaration = declarationOf(schema.entities);            // …and back, exactly
+```
+
+A schema may arrive at runtime — declared by an agent, stored in a cell,
+served to a browser — as a JSON document of entities and fields. It builds into
+the very same `FieldBuilder`s as code does, so validation, the hash, queries
+and policies are one mechanism, and `declarationOf` is exact enough that a
+browser rebuilding the served declaration presents the cell's own generation.
+Refs are thunks (§4.4), so declared entities may point at each other and at the
+fixed ones they are built beside. A server takes a new schema **in place**
+(`TripleServer.reload`): storage, log, epoch and open streams stay; subscribers
+receive a fresh `hello` naming the new generation and what it still accepts
+(§7.3). Rules for declared entities are the host's concern — the SDK's own
+policies stay lambdas (§10.7).
+
 ### 4.4 Mutual references — the thunk form
 
 An entity must exist before it is referenced — unless the reference is a THUNK,

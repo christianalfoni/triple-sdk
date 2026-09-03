@@ -17,6 +17,56 @@ packages/platform/src/
   shell.ts      the implicit index.html (Tailwind + import map + Preact/htm)
 ```
 
+## The schema is data
+
+A fresh workspace has people and apps and nothing else. What it is *about* is
+declared — by an admin, usually through an agent — as a JSON document the cell
+validates, stores, and enforces (`set_schema`; `get_schema` prints the whole
+thing back for editing):
+
+```json
+{
+  "entities": {
+    "note": {
+      "fields": { "text": "string", "to": { "ref": "user" }, "from": { "ref": "user" },
+                  "at": "number", "read": { "type": "boolean", "optional": true } },
+      "rules": {
+        "read":   { "anyOf": [ { "equals": ["fields.to", "actor"] }, { "equals": ["fields.from", "actor"] } ] },
+        "create": { "equals": ["fields.from", "actor"] },
+        "update": { "equals": ["fields.from", "actor"] },
+        "delete": { "equals": ["fields.from", "actor"] },
+        "overrides": { "read": { "write": { "equals": ["fields.to", "actor"] } } }
+      }
+    }
+  }
+}
+```
+
+Field types: `"string"` · `"number"` · `"boolean"` · `{ "ref": "<entity>" }` ·
+`{ "oneOf": [ … ] }` · `{ "object": { … } }`, each with `multiple` / `optional`.
+Rules are expressions over paths — `equals`, `in`, `anyOf`, `allOf`, `not` —
+and only that: the SDK keeps lambdas for code (SPEC §10.7), the platform
+speaks rules as data and **compiles them to lambdas at load**, so the cell runs
+one kind of rule. Being declarative-only here pays exactly what §10.7 said it
+would: the `fields` a rule needs derive from the paths it mentions, so the
+visibility dependency map is static, and a rule prints itself for an agent.
+
+What `set_schema` does: structural validation; then **accrete, never break**
+(§7.3) — adding a *required* field to an entity that already has rows, or
+changing a field's type, is refused with the reason; removing fields or
+entities is fine (the data goes dark); then a build, which throws on an unknown
+ref or a rule that names a field that isn't there; then the declaration is
+stored in the cell's own SQLite as a new **generation** and the server reloads
+**in place** — same storage, same log, every open stream kept. Every earlier
+generation stays accepted, so an app built against last week's schema keeps
+working until it refreshes; the console speaks only the fixed entities and is
+accepted everywhere.
+
+Apps get the schema from the cell: `/w/<org>/schema.js` is the whole schema —
+fixed entities and declared — **as data**, rebuilt in the browser with the same
+builders, so the hash the client presents is the cell's own. One export per
+entity, PascalCase: `import { schema, Note, User } from "schema"`.
+
 ## The model
 
 ```ts
@@ -182,7 +232,8 @@ Every tool runs **as the member** who called it.
 
 | tool | arguments | returns |
 |---|---|---|
-| `get_schema` | — | the workspace's entities and fields, its access rules in prose, and how to build, serve and publish. **Read this first.** |
+| `get_schema` | — | every entity — fixed and declared — with its fields and rules, the declaration verbatim, the rule language, and how to build, serve and publish. **Read this first.** |
+| `set_schema` | `declaration` | admins only — replace the workspace's declared entities and rules; refused with reasons when breaking; live at once as a new generation |
 | `list_apps` | — | `[{ name, live: version \| null }]` |
 | `list_files` | `app` | the draft file paths |
 | `read_file` | `app`, `path` | the draft's content |
@@ -299,7 +350,7 @@ cell writes name, email and role into the caller's User row on every request
 pnpm app:build && pnpm --filter worker platform:build
 pnpm service:dev                     # DEV_AUTH=1 in packages/worker/.dev.vars — no WorkOS needed
 pnpm --filter worker seed            # a couple of todos in org_dev, as Alice
-pnpm service:smoke                   # 13 steps, the last six are this package's
+pnpm service:smoke                   # 20 steps — the schema declared over MCP, every rule exercised through it
 ```
 
 Then point any MCP client at `http://localhost:8787/w/org_dev/mcp` — for

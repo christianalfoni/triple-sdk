@@ -6,7 +6,7 @@
     "dev": "wrangler dev --local --port 8787",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx smoke.ts",
-    "platform:build": "esbuild platform-entry.ts --bundle --format=esm --external:react --external:react/jsx-runtime --external:react-dom/client --outfile=../console/dist/platform/sdk.js && esbuild ../schema/src/index.ts --bundle --format=esm --external:triple-sdk/schema --outfile=../console/dist/platform/schema.js && esbuild ../platform/src/auth.browser.ts --bundle --format=esm --outfile=../console/dist/platform/auth.js",
+    "platform:build": "esbuild platform-entry.ts --bundle --format=esm --external:react --external:react/jsx-runtime --external:react-dom/client --outfile=../console/dist/platform/sdk.js && esbuild ../platform/src/auth.browser.ts --bundle --format=esm --outfile=../console/dist/platform/auth.js",
     "seed": "tsx seed.ts"
   },
   "dependencies": {

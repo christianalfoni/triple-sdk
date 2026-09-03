@@ -1,15 +1,14 @@
 /**
- * The workspace's SHAPE — shared by app and worker (§10.1: the schema module is
- * pure shape; policy lives server-side in the worker, importing this, never the
- * reverse — the trust boundary made a package boundary).
+ * The workspace's FIXED shape — what every workspace has before it declares
+ * anything: its people, and the platform's entities (apps, drafts, releases).
+ * Shared by the console and the worker (§10.1: pure shape; the rules live in
+ * the platform, server-side).
  *
- * The product bet: every todo is PRIVATE to its owner unless `shared` — and
- * flipping `shared` off is a live revocation (§10.6): other members watch it
- * vanish in real time.
- *
- * The platform's entities (apps, drafts, releases) ride in the same registry:
- * an app deployed to this workspace is data under this schema, so a launcher
- * can list apps and an editor can watch drafts with an ordinary useQuery.
+ * Everything a workspace is ABOUT — its todos, notes, whatever an agent
+ * declares — is data (§4.9): declared over MCP, stored in the cell, and served
+ * to apps as `/w/<org>/schema.js`. This module's hash is the console's
+ * generation; every cell lists it as compatible, because the console only
+ * ever touches these fixed entities.
  */
 import { Schema } from "triple-sdk/schema";
 import { platformEntities, platformUserFields } from "workspace-platform/schema";
@@ -20,21 +19,10 @@ export const User = Schema.from({
   ...platformUserFields,
 });
 
-export const Todo = Schema.from({
-  text: Schema.string(),
-  completed: Schema.boolean(),
-  /** false = only the owner's; true = on the workspace board. */
-  shared: Schema.boolean(),
-  owner: Schema.ref(User),
-  /** §4.7 — x and y change together; the object value keeps them atomic. */
-  position: Schema.object({ x: Schema.number(), y: Schema.number() }).optional(),
-  tags: Schema.string().multiple(),
-});
-
 export const platform = platformEntities(User);
 export const App = platform.app;
 export const DraftFile = platform.draftFile;
 export const Release = platform.release;
 export const ReleaseFile = platform.releaseFile;
 
-export const schema = Schema.build({ user: User, todo: Todo, ...platform });
+export const schema = Schema.build({ user: User, ...platform });

@@ -23,13 +23,19 @@ import { MemoryStorage } from "triple-sdk/storage";
 import type { Transaction } from "triple-sdk/transaction";
 import { platformEntitiesOf } from "./schema.ts";
 import { shell } from "./shell.ts";
+import type { WorkspaceDeclaration } from "./workspace.ts";
 
 export type Platform = ReturnType<typeof createPlatform>;
 
 export type Served = { status: number; body: string; contentType: string };
 
-export function createPlatform(options: { server: TripleServer; schema: AppSchema }) {
-  const { server, schema } = options;
+export function createPlatform(options: {
+  server: TripleServer;
+  schema: AppSchema;
+  /** The workspace's declared entities and rules — what get_schema prints and set_schema replaces. */
+  declaration: WorkspaceDeclaration;
+}) {
+  const { server, schema, declaration } = options;
   const entities = platformEntitiesOf(schema);
   const { app: App, draftFile: DraftFile, release: Release, releaseFile: ReleaseFile } = entities;
   let mutations = 0;
@@ -219,7 +225,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
    * release `App.live` points at; the draft channel reads DraftFiles. An app
    * with files but no index.html gets the implicit shell.
    */
-  function serve(actor: string, appName: string, channel: "live" | "draft", path: string): Served {
+  function serve(actor: string, appName: string, channel: "live" | "draft", path: string, schemaUrl: string): Served {
     const app = appByName(actor, appName);
     if (!app) return { status: 404, body: `no app "${appName}"`, contentType: "text/plain" };
     let files: { path: string; content: string }[];
@@ -239,7 +245,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
     const file = files.find((candidate) => candidate.path === wanted);
     if (file) return { status: 200, body: file.content, contentType: contentType(wanted) };
     if (wanted === "index.html" && files.length > 0) {
-      return { status: 200, body: shell(appName), contentType: "text/html; charset=utf-8" };
+      return { status: 200, body: shell(appName, schemaUrl), contentType: "text/html; charset=utf-8" };
     }
     return { status: 404, body: `no file "${wanted}" in ${appName} (${channel})`, contentType: "text/plain" };
   }
@@ -247,6 +253,7 @@ export function createPlatform(options: { server: TripleServer; schema: AppSchem
   return {
     server,
     schema,
+    declaration,
     entities,
     queryAs,
     transactAs,

@@ -5,12 +5,12 @@
  * Preact with `htm` — components in plain JavaScript, no build step anywhere.
  * `react` maps to preact/compat, so triple-sdk/react's hooks work unchanged.
  *
- * `/platform/sdk.js`, `/platform/schema.js` and `/platform/auth.js` are
- * root-absolute: platform infrastructure served as static assets by the edge,
- * built once at deploy (`pnpm --filter worker platform:build`), not
- * per-workspace data.
+ * `/platform/sdk.js` and `/platform/auth.js` are root-absolute: platform
+ * infrastructure served as static assets by the edge, built once at deploy
+ * (`pnpm --filter worker platform:build`). `schema` is the one per-workspace
+ * module — the cell serves its own schema as data (§4.9).
  */
-export function shell(app: string): string {
+export function shell(app: string, schemaUrl: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -24,7 +24,7 @@ export function shell(app: string): string {
     "triple-sdk/query": "/platform/sdk.js",
     "triple-sdk/react": "/platform/sdk.js",
     "triple-sdk/schema": "/platform/sdk.js",
-    "schema": "/platform/schema.js",
+    "schema": "${schemaUrl}",
     "auth": "/platform/auth.js",
     "react": "https://esm.sh/preact@10.24.3/compat",
     "react/jsx-runtime": "https://esm.sh/preact@10.24.3/compat/jsx-runtime",

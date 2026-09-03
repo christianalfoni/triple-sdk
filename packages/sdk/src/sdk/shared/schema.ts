@@ -500,3 +500,172 @@ export function schemaHash(entities: Entities): string {
   }
   return hash.toString(16).padStart(8, "0");
 }
+
+// -----------------------------------------------------------------------------
+// §4.9 — Declarations: the schema as DATA
+// -----------------------------------------------------------------------------
+
+/**
+ * One field, as data. The builders above are the typed form for code; this is
+ * the same shape for a schema that arrives at runtime — declared by an agent
+ * over a wire, stored in a cell, served to a browser. `entitiesFromDeclaration`
+ * turns it into the very same builders, so everything downstream (validation,
+ * the hash, queries, policies) is one mechanism.
+ */
+export type FieldDeclaration =
+  | "string"
+  | "number"
+  | "boolean"
+  | { type: "string" | "number" | "boolean"; multiple?: boolean; optional?: boolean }
+  | { ref: string; multiple?: boolean; optional?: boolean }
+  | { oneOf: readonly string[]; multiple?: boolean; optional?: boolean }
+  | { object: Record<string, FieldDeclaration>; optional?: boolean };
+
+export type EntityDeclaration = { fields: Record<string, FieldDeclaration> };
+
+export type SchemaDeclaration = { entities: Record<string, EntityDeclaration> };
+
+const ENTITY_NAME_RULE = /^[a-z][a-zA-Z0-9]*$/; // ids are `<name>_…`, so no underscores
+const FIELD_NAME_RULE = /^[a-z][a-zA-Z0-9]*$/;
+
+/**
+ * Build entities from a declaration. `base` are entities that already exist
+ * (a workspace's fixed ones): declared refs may target them, and a declared
+ * name may not shadow them. Returns ONLY the declared entities — spread them
+ * next to `base` into `Schema.build`. Every problem is thrown with its path.
+ */
+export function entitiesFromDeclaration(
+  declaration: SchemaDeclaration,
+  base: Entities = {},
+): Entities {
+  if (typeof declaration !== "object" || declaration === null || typeof declaration.entities !== "object") {
+    throw new Error('A schema declaration is { entities: { <name>: { fields: { … } } } }.');
+  }
+  const out: Entities = {};
+  // Two passes: every entity object exists before any ref resolves, and refs
+  // are thunks anyway (§4.4), so declared entities may point at each other.
+  for (const name of Object.keys(declaration.entities)) {
+    if (!ENTITY_NAME_RULE.test(name)) {
+      throw new Error(`Entity "${name}": names are lowerCamelCase letters and digits (ids are "${name}_…").`);
+    }
+    if (base[name]) throw new Error(`Entity "${name}" already exists in this workspace and cannot be redeclared.`);
+    out[name] = {};
+  }
+  const target = (ref: string, where: string): EntityDef => {
+    const entity = out[ref] ?? base[ref];
+    if (!entity) throw new Error(`${where}: there is no entity "${ref}" to reference.`);
+    return entity;
+  };
+  for (const [name, entity] of Object.entries(declaration.entities)) {
+    if (typeof entity !== "object" || entity === null || typeof entity.fields !== "object") {
+      throw new Error(`Entity "${name}": expected { fields: { … } }.`);
+    }
+    for (const [field, spec] of Object.entries(entity.fields)) {
+      const where = `${name}.${field}`;
+      if (!FIELD_NAME_RULE.test(field) || field === "id") {
+        throw new Error(`${where}: field names are lowerCamelCase; "id" is every row's own.`);
+      }
+      out[name]![field] = builderFromDeclaration(spec, where, target);
+    }
+  }
+  return out;
+}
+
+function builderFromDeclaration(
+  spec: FieldDeclaration,
+  where: string,
+  target: (ref: string, where: string) => EntityDef,
+): AnyFieldBuilder {
+  const scalar = (type: "string" | "number" | "boolean"): AnyFieldBuilder =>
+    type === "string" ? Schema.string() : type === "number" ? Schema.number() : Schema.boolean();
+  let builder: AnyFieldBuilder;
+  let modifiers: { multiple?: boolean; optional?: boolean } = {};
+  if (typeof spec === "string") {
+    if (spec !== "string" && spec !== "number" && spec !== "boolean") {
+      throw new Error(`${where}: "${spec}" is not a type — string, number, boolean, { ref }, { oneOf }, { object }.`);
+    }
+    builder = scalar(spec);
+  } else if (typeof spec !== "object" || spec === null) {
+    throw new Error(`${where}: a field is a type name or an object describing one.`);
+  } else if ("ref" in spec) {
+    const ref = spec.ref;
+    if (typeof ref !== "string") throw new Error(`${where}: ref must name an entity.`);
+    builder = Schema.ref(() => target(ref, where));
+    modifiers = spec;
+  } else if ("oneOf" in spec) {
+    if (!Array.isArray(spec.oneOf) || spec.oneOf.length === 0 || !spec.oneOf.every((v) => typeof v === "string")) {
+      throw new Error(`${where}: oneOf lists at least one string value.`);
+    }
+    builder = Schema.oneOf(...(spec.oneOf as [string, ...string[]]));
+    modifiers = spec;
+  } else if ("object" in spec) {
+    const shape: ObjectShape = {};
+    for (const [member, memberSpec] of Object.entries(spec.object)) {
+      if (!FIELD_NAME_RULE.test(member)) throw new Error(`${where}.${member}: member names are lowerCamelCase.`);
+      const built = builderFromDeclaration(memberSpec, `${where}.${member}`, target);
+      if (built.field.type === "ref" || built.field.multiple) {
+        throw new Error(`${where}.${member}: object members are single scalars — no refs, no lists (§4.7).`);
+      }
+      shape[member] = built as ObjectShape[string];
+    }
+    builder = Schema.object(shape);
+    modifiers = { optional: spec.optional };
+  } else if ("type" in spec) {
+    if (spec.type !== "string" && spec.type !== "number" && spec.type !== "boolean") {
+      throw new Error(`${where}: type must be string, number or boolean.`);
+    }
+    builder = scalar(spec.type);
+    modifiers = spec;
+  } else {
+    throw new Error(`${where}: describe the field with type, ref, oneOf or object.`);
+  }
+  if (modifiers.multiple) builder = builder.multiple();
+  if (modifiers.optional) builder = builder.optional();
+  return builder;
+}
+
+/**
+ * The declaration form of built entities — the inverse of
+ * `entitiesFromDeclaration`, exact enough that rebuilding yields the same hash.
+ * This is how a cell ships its whole schema (fixed entities included) to a
+ * browser as data.
+ */
+export function declarationOf(entities: Entities): SchemaDeclaration {
+  const out: SchemaDeclaration = { entities: {} };
+  for (const [name, entity] of Object.entries(entities)) {
+    const fields: Record<string, FieldDeclaration> = {};
+    for (const [field, builder] of Object.entries(entity)) fields[field] = declarationOfField(builder);
+    out.entities[name] = { fields };
+  }
+  return out;
+}
+
+function declarationOfField(builder: AnyFieldBuilder): FieldDeclaration {
+  const { type, multiple, optional, values, shape } = builder.field;
+  const modifiers = { ...(multiple ? { multiple: true } : {}), ...(optional ? { optional: true } : {}) };
+  if (type === "ref") return { ref: entityName(refTarget(builder)!), ...modifiers };
+  if (values) return { oneOf: [...values], ...modifiers };
+  if (type === "object") {
+    const object: Record<string, FieldDeclaration> = {};
+    for (const [member, memberField] of Object.entries(shape ?? {})) {
+      object[member] = declarationOfMember(memberField);
+    }
+    return { object, ...(optional ? { optional: true } : {}) };
+  }
+  if (Array.isArray(type)) throw new Error("A union field has no declaration form (retype through oneOf).");
+  const scalar = type as "string" | "number" | "boolean";
+  return Object.keys(modifiers).length === 0 ? scalar : { type: scalar, ...modifiers };
+}
+
+function declarationOfMember(member: ObjectMemberField): FieldDeclaration {
+  const modifiers = member.optional ? { optional: true } : {};
+  if (member.values) return { oneOf: [...member.values], ...modifiers };
+  if (member.shape) {
+    const object: Record<string, FieldDeclaration> = {};
+    for (const [name, nested] of Object.entries(member.shape)) object[name] = declarationOfMember(nested);
+    return { object, ...modifiers };
+  }
+  if (Array.isArray(member.type)) throw new Error("A union member has no declaration form.");
+  const scalar = member.type as "string" | "number" | "boolean";
+  return member.optional ? { type: scalar, optional: true } : scalar;
+}

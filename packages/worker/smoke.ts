@@ -1,18 +1,41 @@
 /**
- * The SERVICE smoke: two members of one workspace, over the real worker
- * (wrangler dev, DEV_AUTH=1) — proving the product's contract end to end:
- * membership at the edge, privacy and sharing in the policy, the collaborative
- * `completed` override, and unshare arriving at the other member LIVE.
+ * The SERVICE smoke: members of one workspace, over the real worker (wrangler
+ * dev, DEV_AUTH=1) — proving the product's contract end to end: the schema
+ * DECLARED over MCP and every rule exercised through it, membership at the
+ * edge, privacy and sharing, live revocation, drafts and releases, audiences,
+ * app users, invites, tokens, the service as one MCP server, and how a schema
+ * evolves under running clients.
  *
  *   pnpm --filter worker dev     (terminal 1)
  *   pnpm --filter worker smoke   (terminal 2)
  */
+import { unlinkSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { HttpTransport, TripleClient } from "triple-sdk/client";
 import { Query } from "triple-sdk/query";
-import { App, schema, Todo, User } from "app-schema";
+import { Schema, entitiesFromDeclaration } from "triple-sdk/schema";
+import { App, platform, User, schema as fixedSchema } from "app-schema";
+import type { WorkspaceDeclaration } from "workspace-platform";
+import { todos } from "./declarations/todos.ts";
 
 const base = process.env.SMOKE_URL ?? "http://localhost:8787";
 const org = `org_smoke_${Math.floor(Math.random() * 1e6)}`;
+
+// The client's view of the declared schema: fixed entities + the declaration,
+// built the same way the cell builds it — same hash by construction.
+const fixed = { user: User, ...platform };
+const declared = entitiesFromDeclaration(todos, fixed);
+const schema = Schema.build({ ...fixed, ...declared });
+// A typing shim: the declared entity, seen through the shape the code expects.
+const TodoShape = Schema.from({
+  text: Schema.string(),
+  completed: Schema.boolean(),
+  shared: Schema.boolean(),
+  owner: Schema.ref(User),
+  position: Schema.object({ x: Schema.number(), y: Schema.number() }).optional(),
+  tags: Schema.string().multiple(),
+});
+const Todo = declared.todo as unknown as typeof TodoShape;
 
 /** Dev-mode identity is headers: actor, name, and the role the edge would derive from WorkOS. */
 function identity(actor: string, name: string, role = "member", email?: string): Record<string, string> {
@@ -42,10 +65,48 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
+const mcpCall = async (
+  who: Record<string, string>,
+  tool: string,
+  args: object,
+): Promise<{ text: string; isError: boolean }> => {
+  const response = await fetch(`${base}/w/${org}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...who },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
+  });
+  const { result } = (await response.json()) as { result: { content: { text: string }[]; isError?: boolean } };
+  return { text: result.content[0]!.text, isError: result.isError === true };
+};
+const mcp = async (actor: string, name: string, tool: string, args: object, role = "admin"): Promise<string> => {
+  const outcome = await mcpCall(identity(actor, name, role), tool, args);
+  if (outcome.isError) fail(`mcp ${tool}: ${outcome.text}`);
+  return outcome.text;
+};
+
 // -- the edge gate: no identity in prod-mode would 401; DEV_AUTH forwards ours.
 const me = await fetch(`${base}/api/me`, { headers: { "x-actor": "user_alice" } });
 if (!me.ok) fail(`/api/me: ${me.status}`);
 log("edge identity", JSON.stringify(await me.json()));
+
+// -- THE SCHEMA IS DATA (§4.9): a fresh workspace has people and apps and nothing
+//    else. The admin declares what it is about; the cell validates, builds, and
+//    reloads in place. Bad declarations are refused with the reason.
+const memberDeclares = await mcpCall(identity("user_bob", "Bob"), "set_schema", { declaration: todos });
+if (!memberDeclares.isError || !memberDeclares.text.includes("admin")) fail(`a member declared the schema: ${memberDeclares.text}`);
+const badRef = await mcpCall(identity("user_alice", "Alice", "admin"), "set_schema", {
+  declaration: { entities: { note: { fields: { to: { ref: "person" } } } } },
+});
+if (!badRef.isError || !badRef.text.includes('no entity "person"')) fail(`bad ref accepted: ${badRef.text}`);
+const badRule = await mcpCall(identity("user_alice", "Alice", "admin"), "set_schema", {
+  declaration: { entities: { note: { fields: { text: "string" }, rules: { read: { equals: ["fields.owner", "actor"] } } } } },
+});
+if (!badRule.isError || !badRule.text.includes('no field "owner"')) fail(`bad rule accepted: ${badRule.text}`);
+const generation = JSON.parse(await mcp("user_alice", "Alice", "set_schema", { declaration: todos })) as { generation: string };
+if (generation.generation !== schema.hash) fail(`the cell's generation ${generation.generation} ≠ the client's ${schema.hash}`);
+const described = await mcp("user_alice", "Alice", "get_schema", {});
+if (!described.includes("todo:") || !described.includes('"equals"')) fail("get_schema does not show the declared entity and its rules");
+log("declare schema", `bob (member) refused · unknown ref refused · unknown field in a rule refused · alice declares todo → generation ${generation.generation} = the client's`);
 
 const alice = member("user_alice", "Alice", "admin");
 const bob = member("user_bob", "Bob");
@@ -67,7 +128,7 @@ await bobBoard.ready;
 await settle();
 
 if (aliceAll.data.length !== 2) fail(`alice sees ${aliceAll.data.length} of her own todos`);
-log("owner sees all", `alice: ${aliceAll.data.length} todos (private + shared)`);
+log("owner sees all", `alice: ${aliceAll.data.length} todos (private + shared) — through DECLARED rules`);
 
 if (bobBoard.data.length !== 1 || bobBoard.data[0]!.text !== "alice shared") {
   fail(`bob sees ${JSON.stringify(bobBoard.data.map((t) => t.text))} — privacy leak or missing share`);
@@ -109,24 +170,6 @@ log("still hers", `alice keeps both todos; shared flags: ${JSON.stringify(aliceA
 // -- THE PLATFORM: apps are data. An agent writes a draft over MCP, members see
 //    nothing until publish, and a running app learns about a new version LIVE —
 //    the registry row is just another entity under just another policy.
-const mcpCall = async (
-  who: Record<string, string>,
-  tool: string,
-  args: object,
-): Promise<{ text: string; isError: boolean }> => {
-  const response = await fetch(`${base}/w/${org}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...who },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
-  });
-  const { result } = (await response.json()) as { result: { content: { text: string }[]; isError?: boolean } };
-  return { text: result.content[0]!.text, isError: result.isError === true };
-};
-const mcp = async (actor: string, name: string, tool: string, args: object, role = "admin"): Promise<string> => {
-  const outcome = await mcpCall(identity(actor, name, role), tool, args);
-  if (outcome.isError) fail(`mcp ${tool}: ${outcome.text}`);
-  return outcome.text;
-};
 const appUrl = `${base}/w/${org}/apps/hello`;
 const get = async (path: string) => {
   const response = await fetch(`${appUrl}${path}`, { headers: { "x-actor": "user_bob" } });
@@ -141,7 +184,9 @@ const draft = await get("/draft/app.js");
 const liveBefore = await get("/");
 if (draft.status !== 200 || !draft.body.includes("v1")) fail(`draft not served: ${draft.status}`);
 if (liveBefore.status !== 404) fail(`live served before publish: ${liveBefore.status}`);
-log("draft channel", "write_file over MCP → draft serves v1 · live is 404 until publish");
+const shellPage = await get("/draft/");
+if (!shellPage.body.includes(`"schema": "/w/${org}/schema.js"`)) fail("the shell does not point schema at this workspace's module");
+log("draft channel", `write_file over MCP → draft serves v1 · live is 404 until publish · the shell's import map names /w/${org}/schema.js`);
 
 const first = JSON.parse(await mcp("user_alice", "Alice", "publish", { app: "hello" })) as { version: number };
 const liveAfter = await get("/app.js");
@@ -228,7 +273,13 @@ const listed = (await (await fetch(`${base}/api/workspaces`, { headers: identity
 if (created.role !== "admin" || !listed.some((w) => w.id === created.id)) fail(`workspace not created: ${JSON.stringify(created)}`);
 const fresh = await fetch(`${base}/w/${created.id}/api/me`, { headers: identity("user_alice", "Alice", "admin") });
 if (fresh.status !== 200) fail(`the new workspace's cell did not answer: ${fresh.status}`);
-log("create workspace", `POST /api/workspaces → ${created.id} as admin · listed · its cell answers /api/me on first contact`);
+const freshSchema = (await (await fetch(`${base}/w/${created.id}/mcp`, {
+  method: "POST",
+  headers: { "content-type": "application/json", ...identity("user_alice", "Alice", "admin") },
+  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_schema", arguments: {} } }),
+})).json()) as { result: { content: { text: string }[] } };
+if (!freshSchema.result.content[0]!.text.includes("Declared entities: none yet")) fail("a fresh workspace is not empty of declared entities");
+log("create workspace", `POST /api/workspaces → ${created.id} as admin · listed · its cell answers on first contact · it has people and apps and nothing else`);
 
 // -- THE SERVICE AS ONE MCP SERVER (what a claude.ai connector points at):
 //    OAuth's door knock when nobody is signed in, then the same tools with the
@@ -263,5 +314,36 @@ const afterDelete = await mcp("user_alice", "Alice", "list_apps", {});
 if (gone.releases !== 2 || afterDelete.includes("hello") || (await get("/app.js")).status !== 404) fail(`delete_app: ${JSON.stringify(gone)} · ${afterDelete}`);
 log("delete app", `bob (member) is refused · alice (admin) removes ${gone.releases} releases, ${gone.files} files, the drafts and the row · live URL 404s`);
 
+// -- THE SCHEMA EVOLVES under running clients: accrete, never break (§7.3).
+//    A required field on an entity with rows is refused; an optional one is
+//    a new generation — and alice's client, still on the OLD generation,
+//    keeps writing, because every earlier generation stays accepted.
+const withRequired: WorkspaceDeclaration = JSON.parse(JSON.stringify(todos));
+withRequired.entities.todo!.fields.due = "number";
+const breaking = await mcpCall(identity("user_alice", "Alice", "admin"), "set_schema", { declaration: withRequired });
+if (!breaking.isError || !breaking.text.includes("REQUIRED")) fail(`a breaking change was accepted: ${breaking.text}`);
+const withOptional: WorkspaceDeclaration = JSON.parse(JSON.stringify(todos));
+withOptional.entities.todo!.fields.priority = { type: "number", optional: true };
+const evolved = JSON.parse(await mcp("user_alice", "Alice", "set_schema", { declaration: withOptional })) as { generation: string };
+if (evolved.generation === generation.generation) fail("an added field did not change the generation");
+const before = aliceAll.data.length;
+await alice.transact((tx) => {
+  tx.create(Todo, { text: "written on the old generation", completed: false, shared: false, owner: { id: "user_alice" } });
+});
+const evolveDeadline = Date.now() + 3000;
+while (aliceAll.data.length !== before + 1 && Date.now() < evolveDeadline) await settle();
+if (aliceAll.data.length !== before + 1) fail(`alice's old-generation client stopped working after the schema evolved (${aliceAll.data.length})`);
+// The browser module: the same schema as data, rebuilt with the same builders — the same hash.
+const moduleText = await (await fetch(`${base}/w/${org}/schema.js`, { headers: identity("user_alice", "Alice") })).text();
+const modulePath = new URL("./.smoke-schema.mjs", import.meta.url);
+writeFileSync(modulePath, moduleText);
+const served = (await import(pathToFileURL(modulePath.pathname).href)) as { schema: { hash: string }; Todo: object };
+unlinkSync(modulePath);
+const rebuilt = Schema.build({ ...fixed, ...entitiesFromDeclaration(withOptional, fixed) }).hash;
+if (served.schema.hash !== evolved.generation || rebuilt !== evolved.generation || !served.Todo) {
+  fail(`schema.js generation ${served.schema.hash} ≠ cell ${evolved.generation} ≠ rebuilt ${rebuilt}`);
+}
+log("schema evolves", `a required field on an entity with rows is REFUSED · an optional one is generation ${evolved.generation} · alice's old-generation client still writes · /schema.js rebuilds to the same hash and exports Todo`);
+
 console.log("service smoke: all green");
-process.exit(0);
+process.exit(0); // live streams would keep the process open

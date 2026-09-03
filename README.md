@@ -992,14 +992,15 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 18 steps: privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens, the service as one MCP
+pnpm service:smoke # 20 steps: the schema declared over MCP, privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens, the service as one MCP
 pnpm console:dev   # the console on :5173, proxied to the worker
 ```
 
 ### The workspace as a platform
 
 Each workspace cell also speaks [MCP](https://modelcontextprotocol.io) — a
-coding agent connects to `/w/<workspace>/mcp`, reads the schema, writes
+coding agent connects, **declares the workspace's schema and rules** as data
+(§4.9: a fresh workspace has people and apps and nothing else), writes
 **draft** files, and **publishes**. Apps, drafts and releases are entities in
 the workspace schema itself, so a publish is a transaction, releases are
 immutable by policy, and a running app learns about its new version through an

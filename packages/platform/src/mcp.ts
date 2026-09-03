@@ -12,6 +12,10 @@
 import { Query } from "triple-sdk/query";
 import type { EntityDef } from "triple-sdk/schema";
 import type { Platform } from "./platform.ts";
+import { RULE_LANGUAGE } from "./rules.ts";
+import { entityName, refTarget } from "triple-sdk/schema";
+
+const entityNameOf = (builder: { target?: unknown }): string => entityName(refTarget(builder as never)!);
 
 type Rpc = { jsonrpc: "2.0"; id?: number | string; method: string; params?: Record<string, unknown> };
 
@@ -21,8 +25,12 @@ export type McpOptions = {
   actor: string;
   /** Where this workspace's apps are served: `${appBase}/<name>/` (live) and `${appBase}/<name>/draft/`. */
   appBase: string;
-  /** The workspace's access rules in prose — policies are lambdas and cannot describe themselves. */
-  accessRules: string;
+  /**
+   * Replace the workspace's declared entities and rules (§4.9). The host owns
+   * the rebuild: validate, refuse breaking changes, persist, reload the server.
+   * Throws with the reasons; returns the new generation. Admin-only here.
+   */
+  setSchema?: (declaration: unknown) => { generation: string; entities: string[] };
   /**
    * Invite someone INTO the workspace, as a member — the identity provider's
    * job (an organization invitation), so the host supplies it. Returns a
@@ -36,8 +44,22 @@ export const TOOLS = [
   {
     name: "get_schema",
     description:
-      "The workspace's entities and fields, its access rules, and how apps are built, served and published. Read this first.",
+      "The workspace's entities, fields and rules — fixed ones and the declared ones — the full declaration to edit, " +
+      "the rule language, and how apps are built, served and published. Read this first.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_schema",
+    description:
+      "Declare the workspace's OWN entities and rules (admins only). Send the WHOLE declaration — read get_schema, add or change " +
+      "entities, resubmit. Takes effect at once: running apps keep working when the change only adds (optional fields, new " +
+      "entities); adding a required field to an entity that has rows, or changing a field's type, is refused with the reason. " +
+      'Shape: { "entities": { "note": { "fields": { "text": "string", "to": { "ref": "user" } }, "rules": { "read": { … }, … } } } }',
+    inputSchema: {
+      type: "object",
+      properties: { declaration: { type: "object", description: "The complete declaration (see get_schema)." } },
+      required: ["declaration"],
+    },
   },
   {
     name: "list_apps",
@@ -153,7 +175,7 @@ export const TOOLS = [
 ];
 
 export async function handleMcp(request: Request, options: McpOptions): Promise<Response> {
-  const { platform, actor, appBase, accessRules, inviteMember } = options;
+  const { platform, actor, appBase, inviteMember, setSchema } = options;
   if (request.method !== "POST") return new Response("MCP speaks POST", { status: 405 });
   const rpc = (await request.json()) as Rpc;
 
@@ -161,8 +183,11 @@ export async function handleMcp(request: Request, options: McpOptions): Promise<
     new Response(JSON.stringify({ jsonrpc: "2.0", id: rpc.id ?? null, result }), {
       headers: { "content-type": "application/json" },
     });
+  // One contract for refusals: a text result that starts with "error:" IS an
+  // error result, whether a tool returned it or threw it.
   const text = (value: unknown): unknown => ({
     content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+    ...(typeof value === "string" && value.startsWith("error:") ? { isError: true } : {}),
   });
   const validName = (app: string | undefined, path?: string): string | null => {
     if (!app || !/^[\w-]+$/.test(app) || app === "draft") return "app must match [A-Za-z0-9_-]+ (and not be 'draft')";
@@ -194,7 +219,14 @@ export async function handleMcp(request: Request, options: McpOptions): Promise<
       try {
         switch (name) {
           case "get_schema":
-            return respond(text(describeWorkspace(platform, appBase, accessRules)));
+            return respond(text(describeWorkspace(platform, appBase)));
+          case "set_schema": {
+            if (platform.actorRecord(actor).role !== "admin") return respond(text("error: only workspace admins change the schema"));
+            if (!setSchema) return respond(text("error: this workspace's schema is fixed"));
+            const declaration = (rpc.params?.arguments as { declaration?: unknown } | undefined)?.declaration;
+            const outcome = setSchema(declaration);
+            return respond(text({ ...outcome, note: "live now — the schema module and the rules changed; apps on the previous generation keep working if the change only added" }));
+          }
           case "list_apps":
             return respond(
               text(
@@ -308,24 +340,57 @@ function runQueryTool(
   return platform.queryAs(actor, selected);
 }
 
-function describeWorkspace(platform: Platform, appBase: string, accessRules: string): string {
-  const { schema } = platform;
-  const entities = Object.entries(schema.entities)
+const FIXED_RULES: Record<string, string> = {
+  user: "members read every member; an app user reads only themselves; only you write your row; `role` is never client-writable",
+  app: "open: members (audience members), the listed (audience invited), anyone (public); admins always. Members create, update, delete",
+  draftFile: "members who may open the app: read and write",
+  release: "readable by whoever may open the app; created by members; immutable; deleted only by an admin deleting the app",
+  releaseFile: "as release",
+};
+
+function describeWorkspace(platform: Platform, appBase: string): string {
+  const { schema, declaration } = platform;
+  const describe = (name: string, fields: EntityDef): string => {
+    const lines = Object.entries(fields).map(([field, builder]) => {
+      const f = builder.field;
+      const type =
+        f.type === "ref"
+          ? `ref(${(() => { try { return entityNameOf(builder); } catch { return "?"; } })()})`
+          : f.values
+            ? `oneOf(${f.values.join(" | ")})`
+            : Array.isArray(f.type)
+              ? f.type.join("|")
+              : f.type;
+      return `    ${field}: ${type}${f.multiple ? "[]" : ""}${f.optional ? "?" : ""}`;
+    });
+    return `  ${name}:\n${lines.join("\n")}`;
+  };
+  const fixed = Object.entries(schema.entities)
+    .filter(([name]) => !(name in declaration.entities))
+    .map(([name, fields]) => `${describe(name, fields as EntityDef)}\n    rules (fixed): ${FIXED_RULES[name] ?? "—"}`)
+    .join("\n");
+  const declared = Object.entries(schema.entities)
+    .filter(([name]) => name in declaration.entities)
     .map(([name, fields]) => {
-      const lines = Object.entries(fields).map(([field, builder]) => {
-        const f = builder.field;
-        const type = Array.isArray(f.type) ? f.type.join("|") : f.type;
-        return `    ${field}: ${type}${f.multiple ? "[]" : ""}${f.optional ? "?" : ""}`;
-      });
-      return `  ${name}:\n${lines.join("\n")}`;
+      const rules = declaration.entities[name]?.rules;
+      return `${describe(name, fields as EntityDef)}\n    rules: ${rules ? JSON.stringify(rules) : "none — every verb denied"}`;
     })
     .join("\n");
   return [
     `Workspace schema (generation ${schema.hash}):`,
-    entities,
     "",
-    "Access rules:",
-    accessRules,
+    "Fixed entities — every workspace has these; their rules are code:",
+    fixed,
+    "",
+    declared
+      ? `Declared entities — this workspace's own, and yours to change with set_schema:\n${declared}`
+      : "Declared entities: none yet. This workspace has people and apps and nothing else — declare what it is about with set_schema.",
+    "",
+    "The declaration, verbatim (send the WHOLE thing back to set_schema with your changes):",
+    JSON.stringify(declaration, null, 2),
+    "",
+    "The rule language:",
+    RULE_LANGUAGE,
     "",
     "Who is who (ctx.actor.role in every rule, mirrored from the identity provider):",
     "- admin, member: workspace members. They develop — every app's drafts, publish, audiences, invites.",
@@ -345,7 +410,7 @@ function describeWorkspace(platform: Platform, appBase: string, accessRules: str
     "  const [run, state] = useTransaction((tx, ...args) => { tx.create(…); tx.edit(…); });  run(...args); state.status: idle|pending|committed|queued|rejected (rejected also has state.error)",
     "  usePresence() → the ids of members online right now",
     "- data: import { TripleClient, HttpTransport } from 'triple-sdk/client';",
-    "        import { Query } from 'triple-sdk/query'; import { schema, App, Todo, User } from 'schema';",
+    "        import { Query } from 'triple-sdk/query'; import { schema, User, App, <YourEntity> } from 'schema' — one export per entity, PascalCase",
     "- who is looking: import { auth } from 'auth'; const me = await auth.me(); // { actor, name, email?, role } or null",
     "  null means nobody is signed in → auth.login() sends them to sign in and back here. auth.apiBase is this workspace's /api:",
     "  new TripleClient({ schema, transport: new HttpTransport(auth.apiBase) }). Auth is ambient — a cookie; nothing to attach.",

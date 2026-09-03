@@ -77,15 +77,15 @@ type Subscriber = {
 
 export class TripleServer {
   /** The flat predicate map (`"todo/text" → Field`) the runtime layers consume. */
-  readonly schema: Schema;
+  schema!: Schema;
   readonly storage: StorageAdapter;
-  readonly policy?: Policy;
+  policy?: Policy;
 
   readonly epoch: number;
   /** This build's schema generation (§7.3). */
-  readonly schemaHash: string;
+  schemaHash!: string;
   /** Generations this build accepts: its own plus `compatibleSchemas`. */
-  readonly acceptedSchemas: ReadonlySet<string>;
+  acceptedSchemas!: ReadonlySet<string>;
 
   readonly #subscribers = new Set<Subscriber>();
   /** Per entity name, the predicates of its required fields (§4.5). */
@@ -93,6 +93,33 @@ export class TripleServer {
   readonly #retainLog: number | undefined;
 
   constructor(options: TripleServerOptions) {
+    this.storage = options.storage ?? new MemoryStorage();
+    this.#retainLog = options.retainLog;
+    this.epoch = options.epoch ?? this.storage.epoch ?? Date.now();
+    this.#adopt(options);
+  }
+
+  /**
+   * §4.9 — swap the schema (and policy) IN PLACE: the storage, the log, the
+   * epoch and every open stream stay. Subscribers get a fresh `hello` naming the
+   * new generation and what it still accepts, so a client on a compatible
+   * generation keeps working and one that is not freezes (§7.3). This is how a
+   * workspace whose schema is data takes a new declaration without a restart.
+   */
+  reload(options: Pick<TripleServerOptions, "schema" | "policy" | "compatibleSchemas">): void {
+    this.#adopt(options);
+    for (const subscriber of this.#subscribers) {
+      subscriber.send({
+        kind: "hello",
+        epoch: this.epoch,
+        version: this.storage.version,
+        schema: this.schemaHash,
+        compatible: [...this.acceptedSchemas],
+      });
+    }
+  }
+
+  #adopt(options: Pick<TripleServerOptions, "schema" | "policy" | "compatibleSchemas">): void {
     const app = options.schema;
     if (options.policy && options.policy.app !== app) {
       throw new Error(
@@ -102,12 +129,9 @@ export class TripleServer {
     }
     this.schema = app.flat;
     this.policy = options.policy;
-    this.storage = options.storage ?? new MemoryStorage();
-    this.#retainLog = options.retainLog;
-    this.epoch = options.epoch ?? this.storage.epoch ?? Date.now();
     this.schemaHash = app.hash;
     this.acceptedSchemas = new Set([this.schemaHash, ...(options.compatibleSchemas ?? [])]);
-
+    this.#required.clear();
     for (const [name, entity] of Object.entries(app.entities)) {
       const required = Object.entries(entity)
         .filter(([, builder]) => !builder.field.multiple && !builder.field.optional)
