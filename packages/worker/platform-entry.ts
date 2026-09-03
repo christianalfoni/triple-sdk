@@ -5,4 +5,5 @@
 export * from "triple-sdk/client";
 export { Query, toPayload } from "triple-sdk/query";
 export { createHooks } from "triple-sdk/react";
-export { Schema } from "triple-sdk/schema";
+// The served /w/<org>/schema.js rebuilds the workspace's schema from data (§4.9).
+export { Schema, entitiesFromDeclaration, declarationOf } from "triple-sdk/schema";

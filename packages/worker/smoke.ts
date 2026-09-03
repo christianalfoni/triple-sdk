@@ -340,6 +340,11 @@ writeFileSync(modulePath, moduleText);
 const served = (await import(pathToFileURL(modulePath.pathname).href)) as { schema: { hash: string }; Todo: object };
 unlinkSync(modulePath);
 const rebuilt = Schema.build({ ...fixed, ...entitiesFromDeclaration(withOptional, fixed) }).hash;
+// The browser resolves the module's imports through the platform bundle: it must export them.
+const bundle = await (await fetch(`${base}/platform/sdk.js`)).text();
+for (const name of moduleText.match(/import \{([^}]+)\}/)![1]!.split(",").map((n) => n.trim())) {
+  if (!new RegExp(`\\b${name}\\b`).test(bundle.slice(-4000))) fail(`/platform/sdk.js does not export ${name}, which /schema.js imports`);
+}
 if (served.schema.hash !== evolved.generation || rebuilt !== evolved.generation || !served.Todo) {
   fail(`schema.js generation ${served.schema.hash} ≠ cell ${evolved.generation} ≠ rebuilt ${rebuilt}`);
 }
