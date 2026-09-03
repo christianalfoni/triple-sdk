@@ -3,9 +3,11 @@
  * and a WebCrypto JWKS verify, ~zero dependencies), plus the DEV_AUTH bypass so
  * local development and the service smoke never need keys.
  *
- * Session shape: two HttpOnly cookies. `session` holds the WorkOS access token
- * (a JWT we verify per request against the AuthKit JWKS); `profile` holds
- * name/email, HMAC-signed so it cannot be forged client-side.
+ * Session shape: ONE HttpOnly cookie, `session` — the identity WorkOS handed
+ * us at sign-in (id, name, email), HMAC-sealed by the edge with its own
+ * expiry (30 days). Not the WorkOS access token: that JWT expires in minutes
+ * and is meant to be refreshed by an SDK; a sealed session is what a browser
+ * needs. Signing out is dropping the cookie.
  */
 
 export type Env = {
@@ -58,16 +60,9 @@ export async function identify(request: Request, env: Env): Promise<Identity | n
     };
   }
   const cookies = parseCookies(request.headers.get("cookie") ?? "");
-  const token = cookies["session"];
-  if (!token || !env.WORKOS_CLIENT_ID) return null;
-  const claims = await verifyJwt(token, env.WORKOS_CLIENT_ID);
-  if (!claims) return null;
-  const profile = await openProfile(cookies["profile"], env);
-  return {
-    actor: String(claims.sub),
-    name: profile?.name ?? String(claims.sub),
-    ...(profile?.email ? { email: profile.email } : {}),
-  };
+  const session = await openSession(cookies["session"], env);
+  if (!session || session.expires < Date.now()) return null;
+  return { actor: session.actor, name: session.name, ...(session.email ? { email: session.email } : {}) };
 }
 
 /** The OAuth resource this service is, for MCP clients: its own `/mcp`. */
@@ -262,19 +257,23 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
   const name =
     [result.user.first_name, result.user.last_name].filter(Boolean).join(" ") ||
     result.user.email || result.user.id;
-  const profile = await sealProfile({ name, email: result.user.email }, env);
+  const session = await sealSession(
+    { actor: result.user.id, name, email: result.user.email, expires: Date.now() + SESSION_DAYS * 86_400_000 },
+    env,
+  );
   const headers = new Headers({ location: back });
-  const attrs = `HttpOnly; ${secureAttr(request)}Path=/; SameSite=Lax; Max-Age=28800`;
-  headers.append("set-cookie", `session=${result.access_token}; ${attrs}`);
-  headers.append("set-cookie", `profile=${profile}; ${attrs}`);
+  headers.append(
+    "set-cookie",
+    `session=${session}; HttpOnly; ${secureAttr(request)}Path=/; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}`,
+  );
   return new Response(null, { status: 302, headers });
 }
 
+const SESSION_DAYS = 30;
+
 export function logout(request: Request): Response {
   const headers = new Headers({ location: "/" });
-  for (const name of ["session", "profile"]) {
-    headers.append("set-cookie", `${name}=; HttpOnly; ${secureAttr(request)}Path=/; Max-Age=0`);
-  }
+  headers.append("set-cookie", `session=; HttpOnly; ${secureAttr(request)}Path=/; Max-Age=0`);
   return new Response(null, { status: 302, headers });
 }
 
@@ -286,11 +285,6 @@ function secureAttr(request: Request): string {
 // ---------------------------------------------------------------------------
 // WebCrypto plumbing — RS256 JWKS verify + HMAC-sealed profile
 // ---------------------------------------------------------------------------
-
-/** Session tokens (the cookie) verify against the application's SSO JWKS. */
-function verifyJwt(token: string, clientId: string): Promise<Record<string, unknown> | null> {
-  return verifyJwtAt(`${WORKOS}/sso/jwks/${clientId}`, token);
-}
 
 const jwksCache = new Map<string, { keys: JsonWebKey[]; at: number }>();
 
@@ -347,9 +341,9 @@ async function open<T>(purpose: string, sealed: string | undefined, env: Env): P
   return ok ? (JSON.parse(new TextDecoder().decode(b64url(body))) as T) : null;
 }
 
-const sealProfile = (profile: { name: string; email?: string }, env: Env) => seal("profile", profile, env);
-const openProfile = (sealed: string | undefined, env: Env) =>
-  open<{ name: string; email?: string }>("profile", sealed, env);
+type Session = { actor: string; name: string; email?: string; expires: number };
+const sealSession = (session: Session, env: Env) => seal("session", session, env);
+const openSession = (sealed: string | undefined, env: Env) => open<Session>("session", sealed, env);
 
 /**
  * A workspace token: a signed-in member's identity, scoped to ONE workspace,
