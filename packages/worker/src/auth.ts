@@ -11,7 +11,10 @@
 export type Env = {
   DEV_AUTH?: string;
   WORKOS_CLIENT_ID?: string;
+  /** The environment's secret key (sk_…): the bearer for every API call, and the cookie/token HMAC key. */
   WORKOS_API_KEY?: string;
+  /** Only when the dashboard gives the application its OWN client secret; otherwise the API key is the secret. */
+  WORKOS_CLIENT_SECRET?: string;
 };
 
 export type Identity = {
@@ -191,18 +194,22 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
   const code = params.get("code");
   const back = returnTo(params.get("state"));
   if (!code) return new Response("missing code", { status: 400 });
-  const body = new URLSearchParams({
-    client_id: env.WORKOS_CLIENT_ID ?? "",
-    client_secret: env.WORKOS_API_KEY ?? "",
-    grant_type: "authorization_code",
-    code,
-  });
   const response = await fetch(`${WORKOS}/user_management/authenticate`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_id: env.WORKOS_CLIENT_ID ?? "",
+      client_secret: env.WORKOS_CLIENT_SECRET ?? env.WORKOS_API_KEY ?? "",
+      grant_type: "authorization_code",
+      code,
+    }),
   });
-  if (!response.ok) return new Response("authentication failed", { status: 401 });
+  if (!response.ok) {
+    // The reason goes to the worker log, never to the browser: it names the
+    // WorkOS error code (invalid_client, invalid_grant, …), not a secret.
+    console.error(`WorkOS authenticate: ${response.status} ${await response.text()}`);
+    return new Response("authentication failed — see the worker log", { status: 401 });
+  }
   const result = (await response.json()) as {
     access_token: string;
     user: { id: string; first_name?: string; last_name?: string; email?: string };
