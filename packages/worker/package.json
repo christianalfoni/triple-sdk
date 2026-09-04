@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx smoke.ts",
     "platform:build": "esbuild platform-entry.ts --bundle --format=esm --external:react --external:react/jsx-runtime --external:react-dom/client --outfile=../console/dist/platform/sdk.js && esbuild ../platform/src/auth.browser.ts --bundle --format=esm --outfile=../console/dist/platform/auth.js",
-    "seed": "tsx seed.ts"
+    "seed": "tsx seed.ts",
+    "ops": "tsx cli.ts"
   },
   "dependencies": {
     "app-schema": "workspace:*",

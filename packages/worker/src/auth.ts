@@ -23,6 +23,12 @@ export type Env = {
    * as their audience (a Resource Indicator registered in the dashboard).
    */
   WORKOS_AUTHKIT_DOMAIN?: string;
+  /**
+   * The operator plane: a service-level secret (never a user) that opens
+   * `/w/<org>/ops` — raw reads, deletes and resets that bypass every rule, for
+   * debugging and cleanup. `pnpm ops …` carries it. Unset = no operator plane.
+   */
+  OPERATOR_KEY?: string;
 };
 
 export type Identity = {

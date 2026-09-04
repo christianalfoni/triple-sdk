@@ -9,7 +9,7 @@
  *   pnpm --filter worker dev     (terminal 1)
  *   pnpm --filter worker smoke   (terminal 2)
  */
-import { unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { HttpTransport, TripleClient } from "triple-sdk/client";
 import { Query } from "triple-sdk/query";
@@ -349,6 +349,30 @@ if (served.schema.hash !== evolved.generation || rebuilt !== evolved.generation 
   fail(`schema.js generation ${served.schema.hash} ≠ cell ${evolved.generation} ≠ rebuilt ${rebuilt}`);
 }
 log("schema evolves", `a required field on an entity with rows is REFUSED · an optional one is generation ${evolved.generation} · alice's old-generation client still writes · /schema.js rebuilds to the same hash and exports Todo`);
+
+// -- THE OPERATOR PLANE: a service secret, never a user. Raw, unfiltered, and
+//    the only door that deletes rows no rule allows — for debugging and cleanup.
+const operatorKey = process.env.OPS_KEY ?? /^OPERATOR_KEY=(.+)$/m.exec(readFileSync(new URL("./.dev.vars", import.meta.url), "utf8"))?.[1]?.trim();
+const ops = async (body: object) => (await (await fetch(`${base}/w/${org}/ops`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${operatorKey}`, "content-type": "application/json" },
+  body: JSON.stringify(body),
+})).json()) as Record<string, unknown>;
+const noKey = await fetch(`${base}/w/${org}/ops`, { method: "POST", headers: { ...identity("user_alice", "Alice", "admin"), "content-type": "application/json" }, body: JSON.stringify({ command: "info" }) });
+if (noKey.status !== 403) fail(`the operator plane opened without the secret: ${noKey.status}`);
+const info = await ops({ command: "info" });
+const counts = info.counts as Record<string, number>;
+if (!(counts.todo! >= 3) || counts.user! < 3) fail(`ops info: ${JSON.stringify(counts)}`);
+const purged = await ops({ command: "purge", entity: "todo" });
+const purgeDeadline = Date.now() + 3000;
+while (aliceAll.data.length > 0 && Date.now() < purgeDeadline) await settle();
+if ((purged.deleted as number) < 3 || aliceAll.data.length !== 0) fail(`purge: ${JSON.stringify(purged)} · alice still sees ${aliceAll.data.length}`);
+const wiped = await ops({ command: "reset" });
+const fresh2 = await ops({ command: "info" });
+if (wiped.reset !== true || fresh2.version !== 0 || fresh2.generation !== fixedSchema.hash || Object.keys((fresh2.declaration as { entities: object }).entities).length !== 0) {
+  fail(`reset: ${JSON.stringify(wiped)} → ${JSON.stringify(fresh2)}`);
+}
+log("operator plane", `no secret → 403 · info counts ${counts.todo} todos · purge todo → alice's live query empties · reset → version 0, fixed generation, no declaration`);
 
 console.log("service smoke: all green");
 process.exit(0); // live streams would keep the process open

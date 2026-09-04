@@ -16,6 +16,8 @@
  * against them keep working. `/schema.js` serves the whole thing to browsers.
  */
 import type { DurableObjectState, SqlStorage } from "@cloudflare/workers-types";
+import { Query, runQuery } from "triple-sdk/query";
+import type { EntityDef } from "triple-sdk/schema";
 import { TripleServer } from "triple-sdk/server";
 import { DurableStorage } from "triple-sdk/server/durable";
 import { createFetchHandler } from "triple-sdk/server/fetch";
@@ -35,19 +37,26 @@ import { platform as platformEntities, schema as fixedSchema, User } from "app-s
 import { inviteMember, type Env } from "./auth.ts";
 
 export class WorkspaceCell {
-  readonly #sql: SqlStorage;
-  readonly #storage: DurableStorage;
-  readonly #server: TripleServer;
-  readonly #handle: (request: Request) => Promise<Response>;
+  readonly #state: DurableObjectState;
   readonly #env: Env;
-  #platform: Platform;
-  #declaration: WorkspaceDeclaration;
+  #sql!: SqlStorage;
+  #storage!: DurableStorage;
+  #server!: TripleServer;
+  #handle!: (request: Request) => Promise<Response>;
+  #platform!: Platform;
+  #declaration!: WorkspaceDeclaration;
   /** Every generation this workspace has run, oldest first — all stay accepted. */
-  readonly #generations: string[];
+  #generations!: string[];
 
   constructor(state: DurableObjectState, env: Env) {
+    this.#state = state;
     this.#env = env;
-    this.#sql = state.storage.sql;
+    this.#boot();
+  }
+
+  /** Everything the cell holds derives from its storage; a reset re-runs this. */
+  #boot(): void {
+    this.#sql = this.#state.storage.sql;
     this.#sql.exec(
       "CREATE TABLE IF NOT EXISTS workspace_schema (generation TEXT PRIMARY KEY, declaration TEXT NOT NULL, at INTEGER NOT NULL)",
     );
@@ -58,7 +67,7 @@ export class WorkspaceCell {
     const latest = rows[rows.length - 1];
     this.#declaration = latest ? (JSON.parse(latest.declaration) as WorkspaceDeclaration) : EMPTY_DECLARATION;
 
-    this.#storage = new DurableStorage(state.storage);
+    this.#storage = new DurableStorage(this.#state.storage);
     const workspace = buildWorkspace({ User, platform: platformEntities, declaration: this.#declaration });
     this.#server = new TripleServer({
       schema: workspace.schema,
@@ -109,6 +118,13 @@ export class WorkspaceCell {
     // have no row: their actor record is `{ id }`, and every rule denies it.
     this.#ensureUser(request);
 
+    // The operator plane — the edge admits it only with the service secret and
+    // marks it so; no member ever reaches this. Bypasses every rule on purpose.
+    if (workspacePath === "/ops") {
+      if (request.headers.get("x-operator") !== "1") return Promise.resolve(json(403, { error: "operators only" }));
+      return this.#ops(request);
+    }
+
     // §4.9 — this workspace's schema, as a browser module. Shape is not secret
     // within a workspace, and public apps need it too, so anyone may read it.
     if (workspacePath === "/schema.js") {
@@ -152,6 +168,94 @@ export class WorkspaceCell {
     }
 
     return this.#handle(request);
+  }
+
+  /**
+   * Raw reads, deletes and resets that go around the policy — for debugging
+   * and cleanup (`pnpm ops`). Deletes go through a real transaction, so
+   * inbound refs are swept and connected clients see the removals live.
+   */
+  async #ops(request: Request): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown> & { command?: string };
+    const schema = this.#platform.schema;
+    const entities = schema.entities as Record<string, EntityDef>;
+    const subjectsOf = (entity: string): string[] => {
+      const prefix = `${entity}_`;
+      const seen = new Set<string>();
+      for (const [subject] of this.#storage.snapshot().triples) if (subject.startsWith(prefix)) seen.add(subject);
+      return [...seen];
+    };
+    const rows = (name: string, where: Record<string, unknown> = {}) => {
+      const entity = entities[name];
+      if (!entity) throw new Error(`no entity "${name}" — one of: ${Object.keys(entities).join(", ")}`);
+      let query = Query.from(entity);
+      for (const [field, raw] of Object.entries(where)) {
+        const builder = entity[field];
+        if (!builder) throw new Error(`"${name}" has no field "${field}"`);
+        const value = builder.field.type === "ref" && typeof raw === "string" ? { id: raw } : raw;
+        query = query.where(field as never, value as never);
+      }
+      const selection = Object.fromEntries(Object.keys(entity).map((field) => [field, true]));
+      return runQuery(this.#storage, schema.flat, query.select(selection as never)) as Record<string, unknown>[];
+    };
+    const remove = (ids: string[]): { deleted: number; version: number } => {
+      const tx = this.#server.transaction();
+      for (const id of ids) tx.delete(id);
+      const entry = this.#server.commit(tx, "operator");
+      return { deleted: ids.length, version: entry?.version ?? this.#storage.version };
+    };
+    try {
+      switch (body.command) {
+        case "info":
+          return json(200, {
+            generation: this.#server.schemaHash,
+            generations: this.#generations,
+            declaration: this.#declaration,
+            version: this.#storage.version,
+            counts: Object.fromEntries(Object.keys(entities).map((name) => [name, subjectsOf(name).length])),
+            apps: rows("app").map((app) => app.name),
+          });
+        case "schema":
+          return json(200, this.#declaration);
+        case "set-schema":
+          return json(200, this.#setSchema(body.declaration));
+        case "query":
+          return json(200, rows(String(body.entity), (body.where as Record<string, unknown>) ?? {}));
+        case "triples": {
+          const subject = typeof body.subject === "string" ? body.subject : undefined;
+          const limit = typeof body.limit === "number" ? body.limit : 500;
+          return json(200, this.#storage.match([subject, undefined, undefined]).slice(0, limit));
+        }
+        case "log": {
+          const since = typeof body.since === "number" ? body.since : Math.max(0, this.#storage.version - 20);
+          return json(200, this.#storage.entriesSince(since) ?? { compacted: true, floorAbove: since });
+        }
+        case "delete":
+          return json(200, remove(Array.isArray(body.ids) ? (body.ids as string[]) : []));
+        case "purge":
+          return json(200, { entity: body.entity, ...remove(subjectsOf(String(body.entity))) });
+        case "delete-app": {
+          const app = rows("app", { name: String(body.name) })[0];
+          if (!app) return json(404, { error: `no app "${body.name}"` });
+          const releases = rows("release", { app: String(app.id) });
+          const files = releases.flatMap((release) => rows("releaseFile", { release: String(release.id) }));
+          const drafts = rows("draftFile", { app: String(app.id) });
+          const ids = [...files, ...releases, ...drafts, app].map((row) => String(row.id));
+          return json(200, { app: body.name, releases: releases.length, files: files.length, drafts: drafts.length, ...remove(ids) });
+        }
+        case "reset":
+          // Everything — triples, log, schema generations. The cell reboots from
+          // nothing; connected clients must reconnect (their streams die with the
+          // old server). For dev and demos.
+          await this.#state.storage.deleteAll();
+          this.#boot();
+          return json(200, { reset: true, generation: this.#server.schemaHash, version: this.#storage.version });
+        default:
+          return json(400, { error: `unknown command "${body.command}"` });
+      }
+    } catch (cause) {
+      return json(400, { error: (cause as Error).message });
+    }
   }
 
   #ensureUser(request: Request): void {

@@ -12,6 +12,8 @@
  *   /mcp                            the SERVICE as one MCP server — what a claude.ai connector
  *                                   points at: OAuth (AuthKit) per the MCP spec, and the
  *                                   workspace is a tool argument. Same tools, routed to the cell.
+ *   /w/:org/ops                     the OPERATOR plane: a service secret, never a user — raw
+ *                                   reads, deletes, resets that bypass every rule (pnpm ops)
  */
 import type { DurableObjectNamespace, Fetcher } from "@cloudflare/workers-types";
 import { TOOLS } from "workspace-platform";
@@ -52,6 +54,20 @@ export default {
       });
     }
     if (path === "/mcp") return serviceMcp(request, env);
+
+    // The operator plane never touches identity: a service secret, or nothing.
+    const ops = /^\/w\/([\w-]+)\/ops$/.exec(path);
+    if (ops) {
+      const key = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
+      if (!env.OPERATOR_KEY || key !== env.OPERATOR_KEY) return json(403, { error: "operator key required" });
+      const cell = env.CELL.get(env.CELL.idFromName(ops[1]!));
+      const forwarded = new Request(request.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-operator": "1", "x-actor": "operator" },
+        body: await request.text(),
+      });
+      return cell.fetch(forwarded as never) as unknown as Promise<Response>;
+    }
 
     if (path === "/api/me" || path === "/api/workspaces" || path.startsWith("/w/")) {
       const identity = await identify(request, env);
@@ -99,7 +115,7 @@ export default {
       // or `anonymous`, so the cell's policy can admit public apps and
       // nothing else.
       const headers = new Headers(request.headers);
-      for (const name of ["x-actor", "x-actor-name", "x-actor-email", "x-actor-role"]) headers.delete(name);
+      for (const name of ["x-actor", "x-actor-name", "x-actor-email", "x-actor-role", "x-operator"]) headers.delete(name);
       if (identity && role) {
         headers.set("x-actor", identity.actor);
         headers.set("x-actor-name", identity.name);

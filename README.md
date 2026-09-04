@@ -992,8 +992,9 @@ pnpm invariant     # state === fold(log), both adapters · policy · repair · w
 pnpm bench         # the measurements
 pnpm typecheck     # the type-level tests — typecheck IS the test
 pnpm service:dev   # the real service on workerd: edge auth + a cell per workspace
-pnpm service:smoke # 20 steps: the schema declared over MCP, privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens, the service as one MCP
+pnpm service:smoke # 21 steps: the schema declared over MCP, privacy, override, live revocation, draft/publish, audiences, app users, invites, tokens, the service as one MCP
 pnpm console:dev   # the console on :5173, proxied to the worker
+pnpm ops <org> …   # the operator plane: info · query · triples · log · purge · delete-app · reset (a service secret, never a user)
 ```
 
 ### The workspace as a platform

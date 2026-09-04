@@ -12,7 +12,8 @@
     "service:dev": "pnpm --filter worker dev",
     "service:smoke": "pnpm --filter worker smoke",
     "console:dev": "pnpm --filter console dev",
-    "console:build": "pnpm --filter console build"
+    "console:build": "pnpm --filter console build",
+    "ops": "pnpm --filter worker ops"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
